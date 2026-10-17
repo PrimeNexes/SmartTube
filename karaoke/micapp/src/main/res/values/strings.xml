@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SmartTube Mic</string>
+    <string name="subtitle">Wireless karaoke mic for SmartTube on your TV</string>
+    <string name="tvs_header">TVs on this Wi-Fi</string>
+    <string name="tvs_searching">Looking for TVs… On the TV, play a video and turn on Karaoke (mic button in the player).</string>
+    <string name="address_hint">Or type the TV address, e.g. 192.168.1.20:47900</string>
+    <string name="singer_hint">Your name (shown on TV)</string>
+    <string name="mic_boost">Mic level: %d%%</string>
+    <string name="mute">Mute</string>
+    <string name="unmute">Unmute</string>
+    <string name="stop">Stop</string>
+    <string name="tap_to_sing">Tap the mic to sing on your TV</string>
+    <string name="status_connecting">Connecting to %s…</string>
+    <string name="status_connected">Live on %1$s · mic %2$d · %3$d ms</string>
+    <string name="status_no_answer">%s doesn\'t answer. Is Karaoke mode on in SmartTube? Same Wi-Fi?</string>
+    <string name="status_full">%s: all mic slots are taken</string>
+    <string name="status_unsupported">%s can\'t use this mic. Update SmartTube on the TV.</string>
+    <string name="status_mic_error">Microphone is busy or unavailable</string>
+    <string name="status_network_error">Can\'t reach %s. Check the address.</string>
+    <string name="status_muted">Muted</string>
+    <string name="status_needs_pin">Enter the PIN shown on %s</string>
+    <string name="status_pin_locked">Too many wrong PINs. %s lets you try again in a minute.</string>
+    <string name="pin_title">TV PIN</string>
+    <string name="pin_message">Enter the 6-digit PIN shown on the TV: SmartTube player, mic button, Karaoke menu. You only need it once.</string>
+    <string name="pin_wrong">Wrong PIN. Check the PIN in the TV\'s Karaoke menu and try again.</string>
+    <string name="pin_hint">6-digit PIN</string>
+    <string name="pin_connect">Connect</string>
+    <string name="pin_invalid">The PIN has 6 digits</string>
+    <string name="pick_tv_first">Pick a TV or type its address</string>
+    <string name="stop_to_switch">Stop singing to switch TVs</string>
+    <string name="mic_permission_needed">Microphone permission is needed to sing</string>
+    <string name="tips">Tips: hold the phone close to your mouth and away from the TV speakers. Use 5 GHz Wi-Fi for the lowest delay. Sound settings (echo, volume, vocal remover, key) are in the Karaoke menu on the TV.</string>
+    <string name="notification_channel">Karaoke mic</string>
+    <string name="notification_title">Mic is live</string>
+    <string name="notification_text">Singing on %s</string>
+    <string name="mic_button_description">Start or stop the microphone</string>
+</resources>

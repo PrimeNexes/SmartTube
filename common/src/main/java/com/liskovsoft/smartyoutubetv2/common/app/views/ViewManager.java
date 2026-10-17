@@ -26,6 +26,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.presenters.SearchPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.SplashPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.base.BasePresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.dialogs.AppUpdatePresenter;
+import com.liskovsoft.smartyoutubetv2.common.karaoke.KaraokeManager;
 import com.liskovsoft.smartyoutubetv2.common.misc.MotherActivity;
 import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
@@ -323,6 +324,9 @@ public class ViewManager {
             ((MotherActivity) activity).finishReally();
 
             PlaybackPresenter.instance(activity).forceFinish();
+
+            // Don't leave the mic port open after exit
+            KaraokeManager.instance(activity).stop();
 
             // NOTE: The device may hung (SecurityException: requires android.permission.BIND_ACCESSIBILITY_SERVICE)
             //exitToHomeScreen(); // fix open another app from the history stack

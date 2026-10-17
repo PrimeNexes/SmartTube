@@ -1,0 +1,13 @@
+// Pure Java karaoke building blocks shared by the TV app (common) and the phone mic app (karaokemic):
+// wire protocol, jitter buffer and voice/music DSP. No Android dependencies, so it's unit tested on the JVM.
+apply from: gradle.ext.sharedModulesConstants
+apply plugin: 'java-library'
+
+tasks.withType(JavaCompile).configureEach {
+    // Android 4.2+ compatible bytecode
+    options.release = 8
+}
+
+dependencies {
+    testImplementation 'junit:junit:' + junitVersion
+}

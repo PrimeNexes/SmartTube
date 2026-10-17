@@ -14,6 +14,7 @@ import com.google.android.exoplayer2.mediacodec.MediaCodecSelector;
 import com.google.android.exoplayer2.util.AmazonQuirks;
 import com.google.android.exoplayer2.video.VideoRendererEventListener;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.versions.selector.BlacklistMediaCodecSelector;
+import com.liskovsoft.smartyoutubetv2.common.karaoke.VocalRemoverAudioProcessor;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
 
@@ -116,6 +117,14 @@ public class CustomOverridesRenderersFactory extends CustomRenderersFactoryBase 
     //
     //    replaceVideoRenderer(out, videoRenderer);
     //}
+
+    /**
+     * Karaoke vocal remover. Transparent unless karaoke mode is on.
+     */
+    @Override
+    protected AudioProcessor[] buildAudioProcessors() {
+        return new AudioProcessor[] {new VocalRemoverAudioProcessor()};
+    }
 
     // 2.10, 2.11
     @Override

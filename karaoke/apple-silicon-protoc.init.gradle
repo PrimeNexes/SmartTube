@@ -1,0 +1,13 @@
+// Building on an Apple Silicon Mac without Rosetta:
+// protoc 3.17.3 (used by the exoplayer sabr module) ships only an x86_64 binary,
+// so swap in the closest protoc that has a native arm64 build. Runtime library stays 3.17.3.
+//
+// Use once:   ./gradlew -I karaoke/apple-silicon-protoc.init.gradle :smarttubetv:assembleStfdroidDebug
+// Use always: cp karaoke/apple-silicon-protoc.init.gradle ~/.gradle/init.d/
+allprojects { p ->
+    p.afterEvaluate {
+        if (p.extensions.findByName('protobuf') != null) {
+            p.protobuf.protoc { artifact = 'com.google.protobuf:protoc:3.21.12' }
+        }
+    }
+}

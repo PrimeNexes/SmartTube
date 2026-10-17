@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="background">#FF101014</color>
+    <color name="surface">#FF1C1C24</color>
+    <color name="surface_selected">#FF2E2A3C</color>
+    <color name="accent">#FFFF3D71</color>
+    <color name="live">#FF22D39A</color>
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="text_secondary">#B3FFFFFF</color>
+    <color name="meter_track">#33FFFFFF</color>
+</resources>

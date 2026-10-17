@@ -2,6 +2,11 @@ include ':smarttubetv', ':common', ':chatkit', ':leanbackassistant', ':leanback-
 
 def rootDir = settingsDir
 
+// Karaoke: shared protocol/DSP (pure Java) and the phone microphone app
+include ':karaokecore', ':karaokemic'
+project(':karaokecore').projectDir = new File(rootDir, 'karaoke/core')
+project(':karaokemic').projectDir = new File(rootDir, 'karaoke/micapp')
+
 // git submodule
 gradle.ext.sharedModulesRoot = new File(rootDir, '../SharedModules').exists() ? new File(rootDir, '../SharedModules') : new File(rootDir, './SharedModules')
 apply from: new File(gradle.ext.sharedModulesRoot, 'core_settings.gradle')

@@ -1,0 +1,38 @@
+// SmartTube Mic: turns an Android phone into a wireless karaoke microphone for SmartTube on the TV.
+apply from: gradle.ext.sharedModulesConstants
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'com.liskovsoft.smartyoutubetv2.karaokemic'
+    compileSdkVersion project.properties.compileSdkVersion
+    buildToolsVersion project.properties.buildToolsVersion
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    defaultConfig {
+        applicationId "app.smarttube.karaokemic"
+        minSdkVersion 21
+        targetSdkVersion project.properties.compileSdkVersion
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            output.outputFileName = "SmartTubeMic_${variant.versionName}_${variant.buildType.name}.apk"
+        }
+    }
+}
+
+dependencies {
+    implementation project(':karaokecore')
+}
