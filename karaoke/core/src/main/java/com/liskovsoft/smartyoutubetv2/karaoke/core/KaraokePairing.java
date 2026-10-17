@@ -33,6 +33,17 @@ public final class KaraokePairing {
     }
 
     /**
+     * "123456" -> "123 456": easier to read off the TV, and screen readers say it as two short numbers.
+     */
+    public static String formatPin(String pin) {
+        if (pin == null || pin.length() != PIN_DIGITS) {
+            return pin;
+        }
+
+        return pin.substring(0, PIN_DIGITS / 2) + " " + pin.substring(PIN_DIGITS / 2);
+    }
+
+    /**
      * Keeps digits only ("123 456" -> "123456").
      * @return null if the result isn't a full PIN
      */

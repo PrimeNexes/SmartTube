@@ -8,10 +8,11 @@ import android.text.TextUtils;
 import com.liskovsoft.sharedutils.helpers.MessageHelpers;
 import com.liskovsoft.sharedutils.helpers.PermissionHelpers;
 import com.liskovsoft.smartyoutubetv2.common.R;
+import com.google.android.exoplayer2.Format;
+import com.google.android.exoplayer2.util.MimeTypes;
 import com.liskovsoft.smartyoutubetv2.common.app.models.data.Video;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.BasePlayerController;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.manager.PlayerUI;
-import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.OptionCategory;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.OptionItem;
 import com.liskovsoft.smartyoutubetv2.common.app.models.playback.ui.UiOptionItem;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.AppDialogPresenter;
@@ -19,7 +20,8 @@ import com.liskovsoft.smartyoutubetv2.common.karaoke.KaraokeManager;
 import com.liskovsoft.smartyoutubetv2.common.karaoke.MicSource;
 import com.liskovsoft.smartyoutubetv2.common.misc.MotherActivity;
 import com.liskovsoft.smartyoutubetv2.common.prefs.KaraokeData;
-import com.liskovsoft.smartyoutubetv2.common.utils.AppDialogUtil;
+import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.FormatItem;
+import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokePairing;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokeSearch;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.VoiceReverb;
 
@@ -34,6 +36,8 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
     private static final int[] VOCAL_REMOVER_LEVELS = {0, 50, 75, 100};
     private KaraokeManager mKaraokeManager;
     private KaraokeData mKaraokeData;
+    /** Player volume SmartTube set for the current video, before the karaoke music level. -1 if not applied. */
+    private float mMusicBaseVolume = -1;
 
     @Override
     public void onInit() {
@@ -50,14 +54,30 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
 
     @Override
     public void onVideoLoaded(Video item) {
-        // Runs after VideoStateController restored the regular pitch
         updateButtonState();
-        applyKey();
+
+        // Runs after VideoStateController restored the regular pitch and volume of the new video
+        if (isRunning()) {
+            mMusicBaseVolume = -1;
+            applyKey();
+            applyMusicVolume();
+        }
+    }
+
+    @Override
+    public void onSpeedChanged(float speed) {
+        // Without audio time stretching a speed change also resets the pitch
+        if (isRunning() && mKaraokeData.getKeySemitones() != 0) {
+            applyKey();
+        }
     }
 
     @Override
     public void onKaraokeChanged() {
         updateButtonState();
+        // Karaoke may also stop on its own (audio output failure): music goes back to normal either way
+        applyKey();
+        applyMusicVolume();
     }
 
     @Override
@@ -66,7 +86,7 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
             return;
         }
 
-        if (!mKaraokeManager.isRunning() && !startKaraoke()) {
+        if (!isRunning() && !startKaraoke()) {
             return;
         }
 
@@ -80,11 +100,15 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
         }
 
         // Quick toggle
-        if (mKaraokeManager.isRunning()) {
+        if (isRunning()) {
             stopKaraoke();
         } else {
             startKaraoke();
         }
+    }
+
+    private boolean isRunning() {
+        return mKaraokeManager != null && mKaraokeManager.isRunning();
     }
 
     private boolean startKaraoke() {
@@ -97,11 +121,9 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
             enableTvMic(true);
         }
 
-        applyKey();
-
         String pin = mKaraokeManager.getPin();
         if (pin != null) {
-            MessageHelpers.showLongMessage(getContext(), getContext().getString(R.string.karaoke_started_pin, pin));
+            MessageHelpers.showLongMessage(getContext(), getContext().getString(R.string.karaoke_started_pin, KaraokePairing.formatPin(pin)));
         } else {
             MessageHelpers.showMessage(getContext(), R.string.karaoke_started);
         }
@@ -110,8 +132,7 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
     }
 
     private void stopKaraoke() {
-        mKaraokeManager.stop();
-        applyKey(); // back to the regular pitch
+        mKaraokeManager.stop(); // onKaraokeChanged() restores pitch and volume
         MessageHelpers.showMessage(getContext(), R.string.karaoke_stopped);
     }
 
@@ -120,44 +141,104 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
             return;
         }
 
-        getPlayer().setButtonState(R.id.action_karaoke, mKaraokeManager.isRunning() ? PlayerUI.BUTTON_ON : PlayerUI.BUTTON_OFF);
+        getPlayer().setButtonState(R.id.action_karaoke, isRunning() ? PlayerUI.BUTTON_ON : PlayerUI.BUTTON_OFF);
     }
 
     /**
-     * Key change is a pitch shift without tempo change (ExoPlayer's Sonic).
+     * Key change is a pitch shift without tempo change (ExoPlayer's Sonic). Outside karaoke mode
+     * the regular pitch is restored. Without audio time stretching the pitch follows the speed, like SmartTube does.
+     * Tunneled playback can't take audio processing that changes timing, so no key change there.
      */
     private void applyKey() {
         if (getPlayer() == null || mKaraokeManager == null) {
             return;
         }
 
-        boolean shifted = mKaraokeManager.isRunning() && mKaraokeData.getKeySemitones() != 0;
-        getPlayer().setPitch(shifted ? mKaraokeData.getKeyPitch() : getPlayerData().getPitch());
+        boolean shifted = isRunning() && mKaraokeData.getKeySemitones() != 0 && !isTunneling();
+        float pitch = shifted ? mKaraokeData.getKeyPitch() : getPlayerData().getPitch();
+
+        if (!getPlayerTweaksData().isAudioTimeStretchingEnabled() && getPlayer().getSpeed() > 0) {
+            pitch *= getPlayer().getSpeed();
+        }
+
+        if (Math.abs(getPlayer().getPitch() - pitch) > 0.0001f) {
+            getPlayer().setPitch(pitch);
+        }
+    }
+
+    /**
+     * Karaoke's own music level: scales what SmartTube set for the video, doesn't touch the saved player volume.
+     */
+    private void applyMusicVolume() {
+        if (getPlayer() == null || mKaraokeManager == null) {
+            return;
+        }
+
+        if (!isRunning()) {
+            if (mMusicBaseVolume >= 0) {
+                getPlayer().setVolume(mMusicBaseVolume);
+                mMusicBaseVolume = -1;
+            }
+            return;
+        }
+
+        if (mMusicBaseVolume < 0) {
+            mMusicBaseVolume = getPlayer().getVolume();
+        }
+
+        getPlayer().setVolume(mMusicBaseVolume * mKaraokeData.getMusicVolumePercent() / 100f);
+    }
+
+    private boolean isTunneling() {
+        return getPlayerTweaksData().isTunneledPlaybackEnabled();
+    }
+
+    /**
+     * Dolby tracks may go straight to the TV/soundbar (passthrough), past any audio processing.
+     */
+    private boolean isDolbyAudio() {
+        FormatItem audio = getPlayer() != null ? getPlayer().getAudioFormat() : null;
+        Format format = audio != null && audio.getTrack() != null ? audio.getTrack().format : null;
+        String mimeType = format != null ? format.sampleMimeType : null;
+
+        return MimeTypes.AUDIO_AC3.equals(mimeType) || MimeTypes.AUDIO_E_AC3.equals(mimeType) || MimeTypes.AUDIO_E_AC3_JOC.equals(mimeType);
+    }
+
+    /**
+     * Title plus why the option may have no effect right now.
+     */
+    private String withLimit(int titleResId, boolean isKey) {
+        Context context = getContext();
+        String title = context.getString(titleResId);
+
+        if (isKey && isTunneling()) {
+            return title + " · " + context.getString(R.string.karaoke_not_with_tunneling);
+        }
+
+        return isDolbyAudio() ? title + " · " + context.getString(R.string.karaoke_not_with_dolby) : title;
     }
 
     private void showKaraokeDialog() {
         Context context = getContext();
         AppDialogPresenter dialog = getAppDialogPresenter();
-        boolean isRunning = mKaraokeManager.isRunning();
         String pin = mKaraokeManager.getPin();
-        String modeDescription = isRunning && pin != null ?
-                context.getString(R.string.karaoke_mode_desc_pin, pin) : context.getString(R.string.karaoke_mode_desc);
 
-        dialog.appendSingleSwitch(UiOptionItem.from(context.getString(R.string.karaoke_mode), modeDescription,
+        dialog.appendSingleSwitch(UiOptionItem.from(context.getString(R.string.karaoke_mode),
                 option -> {
                     if (option.isSelected()) {
                         startKaraoke();
                     } else {
                         stopKaraoke();
                     }
-                }, isRunning));
+                }, isRunning()));
 
-        String addresses = isRunning ? TextUtils.join(", ", mKaraokeManager.getAddresses()) : context.getString(R.string.karaoke_turn_on_first);
-        dialog.appendLongTextCategory(context.getString(R.string.karaoke_how_to_connect),
-                UiOptionItem.from(context.getString(R.string.karaoke_how_to_connect_desc, mKaraokeManager.getTvName(), addresses,
-                        pin != null ? pin : context.getString(R.string.karaoke_pin_not_needed))));
+        // Pages built on click, so they're fresh (new mics, karaoke turned on in the meantime)
+        String connectTitle = pin != null ? context.getString(R.string.karaoke_how_to_connect_pin, KaraokePairing.formatPin(pin)) :
+                context.getString(R.string.karaoke_how_to_connect);
+        dialog.appendSingleButton(UiOptionItem.from(connectTitle, option -> showConnectPage()));
+        dialog.appendSingleButton(UiOptionItem.from(context.getString(R.string.karaoke_mics_count, mKaraokeManager.getMics().size()),
+                option -> showMicsPage()));
 
-        appendMicsCategory(dialog);
         appendMicVolumeCategory(dialog);
         appendVoiceEffectCategory(dialog);
         appendVocalRemoverCategory(dialog);
@@ -168,14 +249,32 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
 
         dialog.appendSingleButton(UiOptionItem.from(context.getString(R.string.karaoke_new_pin), option -> {
             String newPin = mKaraokeManager.renewPin();
-            MessageHelpers.showLongMessage(context, context.getString(R.string.karaoke_new_pin_done, newPin));
+            getAppDialogPresenter().closeDialog(); // the menu shows the old PIN, reopening it shows the new one
+            MessageHelpers.showLongMessage(context, context.getString(R.string.karaoke_new_pin_done, KaraokePairing.formatPin(newPin)));
         }));
         dialog.appendSingleButton(UiOptionItem.from(context.getString(R.string.karaoke_find_version), option -> searchKaraokeVersion()));
 
         dialog.showDialog(context.getString(R.string.karaoke));
     }
 
-    private void appendMicsCategory(AppDialogPresenter dialog) {
+    private void showConnectPage() {
+        Context context = getContext();
+        String pin = mKaraokeManager.getPin();
+        String addresses = TextUtils.join(", ", mKaraokeManager.getAddresses());
+        String text = context.getString(R.string.karaoke_how_to_connect_desc, mKaraokeManager.getTvName(), addresses,
+                pin != null ? KaraokePairing.formatPin(pin) : context.getString(R.string.karaoke_pin_not_needed));
+
+        if (!isRunning()) {
+            text = context.getString(R.string.karaoke_turn_on_first) + "\n\n" + text;
+        }
+
+        AppDialogPresenter page = getAppDialogPresenter();
+        String title = context.getString(R.string.karaoke_how_to_connect);
+        page.appendLongTextCategory(title, UiOptionItem.from(text));
+        page.showDialog(title);
+    }
+
+    private void showMicsPage() {
         Context context = getContext();
         List<OptionItem> options = new ArrayList<>();
 
@@ -190,10 +289,13 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
         }
 
         if (options.isEmpty()) {
-            options.add(UiOptionItem.from(context.getString(R.string.karaoke_no_mics)));
+            options.add(UiOptionItem.from(context.getString(isRunning() ? R.string.karaoke_no_mics : R.string.karaoke_turn_on_first)));
         }
 
-        dialog.appendStringsCategory(context.getString(R.string.karaoke_mics), options);
+        AppDialogPresenter page = getAppDialogPresenter();
+        String title = context.getString(R.string.karaoke_mics);
+        page.appendStringsCategory(title, options);
+        page.showDialog(title);
     }
 
     private void appendMicVolumeCategory(AppDialogPresenter dialog) {
@@ -240,7 +342,7 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
             }, mKaraokeData.getVocalRemoverPercent() == percent));
         }
 
-        dialog.appendRadioCategory(context.getString(R.string.karaoke_vocal_remover), options);
+        dialog.appendRadioCategory(withLimit(R.string.karaoke_vocal_remover, false), options);
     }
 
     private void appendKeyCategory(AppDialogPresenter dialog) {
@@ -252,21 +354,27 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
             String title = semitones == 0 ? context.getString(R.string.karaoke_key_original) : String.format(Locale.US, "%+d", semitones);
             options.add(UiOptionItem.from(title, option -> {
                 mKaraokeData.setKeySemitones(value);
-                applyKey();
+                if (isRunning()) {
+                    applyKey();
+                }
             }, mKaraokeData.getKeySemitones() == semitones));
         }
 
-        dialog.appendRadioCategory(context.getString(R.string.karaoke_key), options);
+        dialog.appendRadioCategory(withLimit(R.string.karaoke_key, true), options);
     }
 
     private void appendMusicVolumeCategory(AppDialogPresenter dialog) {
-        OptionCategory category = AppDialogUtil.createAudioVolumeCategory(getContext(), () -> {
-            if (getPlayer() != null) {
-                getPlayer().setVolume(getPlayerData().getPlayerVolume());
-            }
-        });
+        List<OptionItem> options = new ArrayList<>();
 
-        dialog.appendRadioCategory(getContext().getString(R.string.karaoke_music_volume), category.options);
+        for (int percent = 0; percent <= 100; percent += 10) {
+            int value = percent;
+            options.add(UiOptionItem.from(String.format(Locale.US, "%d%%", percent), option -> {
+                mKaraokeData.setMusicVolumePercent(value);
+                applyMusicVolume();
+            }, mKaraokeData.getMusicVolumePercent() == percent));
+        }
+
+        dialog.appendRadioCategory(getContext().getString(R.string.karaoke_music_volume), options);
     }
 
     private void appendLatencyCategory(AppDialogPresenter dialog) {
@@ -290,6 +398,11 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
         Context context = getContext();
         List<OptionItem> options = new ArrayList<>();
 
+        options.add(UiOptionItem.from(context.getString(R.string.karaoke_auto_level), option -> {
+            mKaraokeData.setAutoLevelEnabled(option.isSelected());
+            mKaraokeManager.applySettings();
+        }, mKaraokeData.isAutoLevelEnabled()));
+
         options.add(UiOptionItem.from(context.getString(R.string.karaoke_noise_gate), option -> {
             mKaraokeData.setNoiseGateEnabled(option.isSelected());
             mKaraokeManager.applySettings();
@@ -298,8 +411,13 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
         options.add(UiOptionItem.from(context.getString(R.string.karaoke_use_tv_mic),
                 option -> enableTvMic(option.isSelected()), mKaraokeData.isLocalMicEnabled()));
 
-        options.add(UiOptionItem.from(context.getString(R.string.karaoke_require_pin),
-                option -> mKaraokeManager.setPinRequired(option.isSelected()), mKaraokeData.isPinRequired()));
+        options.add(UiOptionItem.from(context.getString(R.string.karaoke_require_pin), option -> {
+            mKaraokeManager.setPinRequired(option.isSelected());
+            String pin = mKaraokeManager.getPin();
+            if (pin != null) { // phones that joined without it have to enter it now
+                MessageHelpers.showLongMessage(context, context.getString(R.string.karaoke_pin_required_now, KaraokePairing.formatPin(pin)));
+            }
+        }, mKaraokeData.isPinRequired()));
 
         dialog.appendCheckedCategory(context.getString(R.string.karaoke_options), options);
     }

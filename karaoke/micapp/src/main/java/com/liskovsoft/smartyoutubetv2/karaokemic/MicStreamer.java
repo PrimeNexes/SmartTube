@@ -60,17 +60,21 @@ final class MicStreamer {
     private volatile boolean mIsHelloNeeded;
     /** The TV accepted this mic, audio is worth sending. */
     private volatile boolean mIsPaired;
+    /** Set when the TV turned down a PIN that worked before: the TV has a new PIN. */
+    private volatile boolean mIsPinChanged;
     private long mChallenge;
     private boolean mHasChallenge;
-    private boolean mIsPinSaved;
+    /** PIN the TV accepted before or the one saved for it (control thread). */
+    private String mKnownPin;
 
     /**
-     * PINs the user entered, per TV name.
+     * PINs the user entered, per TV. Keyed by the TV's random id, not its name: TVs can share a name,
+     * and a stranger can't get a proof of the PIN just by calling itself like the TV.
      */
     interface PinStore {
-        String getPin(String tvName);
-        void savePin(String tvName, String pin);
-        void clearPin(String tvName);
+        String getPin(long tvId);
+        void savePin(long tvId, String pin);
+        void clearPin(long tvId);
     }
 
     MicStreamer(String host, int port, String singerName, PinStore pinStore) {
@@ -115,6 +119,13 @@ final class MicStreamer {
 
     int getRttMs() {
         return mRttMs;
+    }
+
+    /**
+     * With {@link #STATUS_WRONG_PIN}: the rejected PIN wasn't a typo, it worked before.
+     */
+    boolean isPinChanged() {
+        return mIsPinChanged;
     }
 
     /**
@@ -181,7 +192,7 @@ final class MicStreamer {
                 String pin = mPin;
                 byte[] proof = pin != null && mHasChallenge ? KaraokePairing.proof(pin, mChallenge, mSessionId) : null;
                 sendBuffer.clear();
-                KaraokeProtocol.writeHello(sendBuffer, mSessionId, seq++, (int) nowMs, mSingerName, proof);
+                KaraokeProtocol.writeHello(sendBuffer, mSessionId, seq++, (int) nowMs, mSingerName, proof, mChallenge);
                 send(socket, sendBuffer);
             }
 
@@ -217,6 +228,7 @@ final class MicStreamer {
             boolean silentTv = lastAnswerMs == 0 ? nowMs - startMs > ANSWER_TIMEOUT_MS : nowMs - lastAnswerMs > ANSWER_TIMEOUT_MS;
             if (silentTv && mStatus != STATUS_MIC_ERROR) {
                 mStatus = STATUS_NO_ANSWER;
+                mIsPaired = false; // stop sending audio into the void (battery, Wi-Fi airtime), resume on the next answer
             }
         }
 
@@ -229,19 +241,24 @@ final class MicStreamer {
     private void onWelcome(KaraokeProtocol.Welcome welcome) {
         mIsPaired = welcome.status == KaraokeProtocol.STATUS_OK;
 
+        String pin = mPin; // the UI thread may set a typed one any time
+
         switch (welcome.status) {
             case KaraokeProtocol.STATUS_OK:
                 mStatus = STATUS_CONNECTED;
-                if (mPin != null && !mIsPinSaved) {
-                    mPinStore.savePin(welcome.tvName, mPin);
-                    mIsPinSaved = true;
+                if (pin != null && !pin.equals(mKnownPin)) {
+                    mPinStore.savePin(welcome.tvId, pin);
+                    mKnownPin = pin;
                 }
                 break;
             case KaraokeProtocol.STATUS_PIN_REQUIRED:
-                if (mPin == null && !mIsPinRejected) {
-                    mPin = mPinStore.getPin(welcome.tvName); // paired before
+                if (pin == null && !mIsPinRejected) {
+                    String saved = mPinStore.getPin(welcome.tvId); // paired before
+                    if (saved != null) {
+                        mPin = pin = mKnownPin = saved;
+                    }
                 }
-                if (mPin != null) {
+                if (pin != null) {
                     mIsHelloNeeded = true; // now with the proof, the challenge is known
                     mStatus = STATUS_CONNECTING;
                 } else {
@@ -249,10 +266,11 @@ final class MicStreamer {
                 }
                 break;
             case KaraokeProtocol.STATUS_PIN_WRONG:
-                mPinStore.clearPin(welcome.tvName); // e.g. the TV got a new PIN
+                mIsPinChanged = pin != null && pin.equals(mKnownPin); // New PIN on the TV
+                mPinStore.clearPin(welcome.tvId);
                 mPin = null;
+                mKnownPin = null;
                 mIsPinRejected = true;
-                mIsPinSaved = false;
                 mStatus = STATUS_WRONG_PIN;
                 break;
             case KaraokeProtocol.STATUS_PIN_LOCKED:
@@ -280,6 +298,8 @@ final class MicStreamer {
 
         short[] frame = new short[FRAME];
         ByteBuffer packet = ByteBuffer.allocate(KaraokeProtocol.MAX_PACKET_SIZE);
+        // Reused for every frame: no garbage in the audio loop
+        DatagramPacket datagram = new DatagramPacket(packet.array(), packet.capacity(), mTarget);
         DatagramSocket socket = mSocket;
         int seq = 0;
 
@@ -314,7 +334,8 @@ final class MicStreamer {
                 packet.clear();
                 KaraokeProtocol.writeAudio(packet, mSessionId, seq++, (int) SystemClock.elapsedRealtime(),
                         muted ? KaraokeProtocol.FLAG_MUTED : 0, frame, read);
-                send(socket, packet);
+                datagram.setLength(packet.position());
+                send(socket, datagram);
             }
         } finally {
             try {
@@ -328,8 +349,12 @@ final class MicStreamer {
     }
 
     private void send(DatagramSocket socket, ByteBuffer buffer) {
+        send(socket, new DatagramPacket(buffer.array(), buffer.position(), mTarget));
+    }
+
+    private void send(DatagramSocket socket, DatagramPacket datagram) {
         try {
-            socket.send(new DatagramPacket(buffer.array(), buffer.position(), mTarget));
+            socket.send(datagram);
         } catch (IOException | RuntimeException e) {
             // Wi-Fi hiccup, the TV just treats it as a lost packet
             if (mIsRunning) {

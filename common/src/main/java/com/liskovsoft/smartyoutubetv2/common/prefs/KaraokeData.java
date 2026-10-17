@@ -32,6 +32,9 @@ public class KaraokeData extends DataChangeBase {
     private int mPort;
     private boolean mIsPinRequired;
     private String mPin;
+    private boolean mIsAutoLevelEnabled;
+    private long mTvId;
+    private int mMusicVolumePercent;
 
     private KaraokeData(Context context) {
         mAppPrefs = AppPrefs.instance(context);
@@ -128,6 +131,18 @@ public class KaraokeData extends DataChangeBase {
         persistState();
     }
 
+    /**
+     * Evens out quiet and loud mics/singers.
+     */
+    public boolean isAutoLevelEnabled() {
+        return mIsAutoLevelEnabled;
+    }
+
+    public void setAutoLevelEnabled(boolean enabled) {
+        mIsAutoLevelEnabled = enabled;
+        persistState();
+    }
+
     public boolean isLocalMicEnabled() {
         return mIsLocalMicEnabled;
     }
@@ -139,6 +154,34 @@ public class KaraokeData extends DataChangeBase {
 
     public int getPort() {
         return mPort;
+    }
+
+    /**
+     * Random, stable id of this TV, so phones don't mix up TVs with the same name.
+     */
+    public long getTvId() {
+        if (mTvId == 0) {
+            long id;
+            do {
+                id = new SecureRandom().nextLong();
+            } while (id == 0);
+            mTvId = id;
+            persistState();
+        }
+
+        return mTvId;
+    }
+
+    /**
+     * Music level while karaoke mode is on, on top of the regular player volume. Not saved into the player settings.
+     */
+    public int getMusicVolumePercent() {
+        return mMusicVolumePercent;
+    }
+
+    public void setMusicVolumePercent(int percent) {
+        mMusicVolumePercent = Math.max(0, Math.min(100, percent));
+        persistState();
     }
 
     public boolean isPinRequired() {
@@ -182,12 +225,16 @@ public class KaraokeData extends DataChangeBase {
         mPort = Helpers.parseInt(split, 7, KaraokeProtocol.DEFAULT_PORT);
         mIsPinRequired = Helpers.parseBoolean(split, 8, true);
         mPin = KaraokePairing.normalizePin(Helpers.parseStr(split, 9));
+        mIsAutoLevelEnabled = Helpers.parseBoolean(split, 10, true);
+        mTvId = Helpers.parseLong(split, 11, 0);
+        mMusicVolumePercent = Helpers.parseInt(split, 12, 100);
     }
 
     private void persistState() {
         mAppPrefs.setData(KARAOKE_DATA, Helpers.mergeData(
                 mMicVolumePercent, mVoiceEffect, mVocalRemoverPercent, mKeySemitones, mLatencyMode,
-                mIsNoiseGateEnabled, mIsLocalMicEnabled, mPort, mIsPinRequired, mPin
+                mIsNoiseGateEnabled, mIsLocalMicEnabled, mPort, mIsPinRequired, mPin, mIsAutoLevelEnabled,
+                mTvId, mMusicVolumePercent
         ));
 
         onDataChange();

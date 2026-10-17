@@ -1,18 +1,23 @@
 package com.liskovsoft.smartyoutubetv2.karaoke.core;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Audio jitter buffer for one network mic. One producer (network thread), one consumer (mixer thread).<br/>
  * - Holds playback until {@link #setTargetSamples target} samples are queued, again after every underrun.<br/>
  * - Fills lost packets with silence so timing stays aligned, drops late/duplicate packets.<br/>
  * - Compensates clock drift between the phone ADC and the TV DAC by consuming one sample more or less per frame
- *   (inaudible ~0.4% rate change) whenever the queue drifts away from the target.
+ *   (inaudible ~0.4% rate change) whenever the queue drifts away from the target.<br/>
+ * Only the two audio threads take the lock. Stats and target changes from other threads (UI) go through
+ * volatile/atomic fields, so a slow UI thread can't stall the mixer.
  */
 public final class JitterBuffer {
     /** Bigger sequence gap means the sender restarted or the network was gone for a while. */
     private static final int MAX_GAP_PACKETS = 20;
     private final short[] mRing;
+    private final int mMask;
+    private final AtomicInteger mPendingTarget = new AtomicInteger(-1);
     private long mWritePos;
     private long mReadPos;
     private int mTargetSamples;
@@ -21,23 +26,32 @@ public final class JitterBuffer {
     private boolean mBuffering = true;
     private boolean mHasSeq;
     private int mExpectedSeq;
-    private long mPacketCount;
-    private long mLostCount;
-    private long mLateCount;
-    private long mUnderrunCount;
+    // Written under the lock by one thread, read by anyone
+    private volatile int mLevel;
+    private volatile long mPacketCount;
+    private volatile long mLostCount;
+    private volatile long mLateCount;
+    private volatile long mUnderrunCount;
 
+    /**
+     * @param capacitySamples rounded up to a power of two (cheap index math on 32 bit CPUs)
+     */
     public JitterBuffer(int capacitySamples, int targetSamples) {
-        mRing = new short[capacitySamples];
-        setTargetSamples(targetSamples);
+        int capacity = Integer.highestOneBit(Math.max(capacitySamples, 2) - 1) << 1;
+        mRing = new short[capacity];
+        mMask = capacity - 1;
+        applyTarget(targetSamples);
     }
 
-    public synchronized void setTargetSamples(int targetSamples) {
-        mTargetSamples = Math.max(1, Math.min(targetSamples, mRing.length / 4));
-        mDriftWindow = Math.max(mTargetSamples / 4, 96);
-        mMaxSamples = Math.min(mRing.length, mTargetSamples * 3 + 4_800);
+    /**
+     * Any thread. Takes effect with the next packet or frame.
+     */
+    public void setTargetSamples(int targetSamples) {
+        mPendingTarget.set(targetSamples);
     }
 
     public synchronized int getTargetSamples() {
+        applyPendingTarget();
         return mTargetSamples;
     }
 
@@ -45,6 +59,8 @@ public final class JitterBuffer {
      * @param pcm buffer positioned at the samples, little-endian
      */
     public synchronized void writePacket(int seq, ByteBuffer pcm, int sampleCount) {
+        applyPendingTarget();
+
         if (mHasSeq) {
             int gap = seq - mExpectedSeq; // overflow safe
 
@@ -68,17 +84,22 @@ public final class JitterBuffer {
         for (int i = 0; i < sampleCount; i++) {
             put(pcm.getShort());
         }
+
+        updateLevel();
     }
 
     /**
      * For local sources with no sequence numbers.
      */
     public synchronized void writeSamples(short[] samples, int offset, int count) {
+        applyPendingTarget();
         mPacketCount++;
 
         for (int i = 0; i < count; i++) {
             put(samples[offset + i]);
         }
+
+        updateLevel();
     }
 
     /**
@@ -86,6 +107,8 @@ public final class JitterBuffer {
      * @return number of real (not padded) samples
      */
     public synchronized int read(float[] out, int count) {
+        applyPendingTarget();
+
         int level = (int) (mWritePos - mReadPos);
 
         if (mBuffering) {
@@ -103,6 +126,7 @@ public final class JitterBuffer {
             mReadPos += level;
             mBuffering = true;
             mUnderrunCount++;
+            updateLevel();
             return level;
         }
 
@@ -126,12 +150,16 @@ public final class JitterBuffer {
         }
 
         mReadPos += consume;
+        updateLevel();
 
         return count;
     }
 
-    public synchronized int getLevel() {
-        return (int) (mWritePos - mReadPos);
+    /**
+     * Queued samples. Any thread.
+     */
+    public int getLevel() {
+        return mLevel;
     }
 
     public synchronized boolean isBuffering() {
@@ -140,22 +168,37 @@ public final class JitterBuffer {
 
     public synchronized void reset() {
         resetInt();
+        updateLevel();
     }
 
-    public synchronized long getPacketCount() {
+    public long getPacketCount() {
         return mPacketCount;
     }
 
-    public synchronized long getLostCount() {
+    public long getLostCount() {
         return mLostCount;
     }
 
-    public synchronized long getLateCount() {
+    public long getLateCount() {
         return mLateCount;
     }
 
-    public synchronized long getUnderrunCount() {
+    public long getUnderrunCount() {
         return mUnderrunCount;
+    }
+
+    private void applyPendingTarget() {
+        int target = mPendingTarget.getAndSet(-1);
+
+        if (target >= 0) {
+            applyTarget(target);
+        }
+    }
+
+    private void applyTarget(int targetSamples) {
+        mTargetSamples = Math.max(1, Math.min(targetSamples, mRing.length / 4));
+        mDriftWindow = Math.max(mTargetSamples / 4, 96);
+        mMaxSamples = Math.min(mRing.length, mTargetSamples * 3 + 4_800);
     }
 
     private void resetInt() {
@@ -164,8 +207,12 @@ public final class JitterBuffer {
         mHasSeq = false;
     }
 
+    private void updateLevel() {
+        mLevel = (int) (mWritePos - mReadPos);
+    }
+
     private void put(short sample) {
-        mRing[(int) (mWritePos % mRing.length)] = sample;
+        mRing[(int) (mWritePos & mMask)] = sample;
         mWritePos++;
 
         if (mWritePos - mReadPos > mRing.length) { // overflow, forget the oldest
@@ -174,7 +221,7 @@ public final class JitterBuffer {
     }
 
     private float sampleAt(long pos) {
-        return mRing[(int) (pos % mRing.length)] / 32768f;
+        return mRing[(int) (pos & mMask)] / 32768f;
     }
 
     private void copy(float[] out, int count) {

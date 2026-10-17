@@ -25,6 +25,12 @@ public class KaraokePairingTest {
     }
 
     @Test
+    public void formatsAndParsesBack() {
+        assertEquals("123 456", KaraokePairing.formatPin("123456"));
+        assertEquals("123456", KaraokePairing.normalizePin(KaraokePairing.formatPin("123456")));
+    }
+
+    @Test
     public void normalizesTypedPins() {
         assertEquals("123456", KaraokePairing.normalizePin(" 123 456 "));
         assertEquals("012345", KaraokePairing.normalizePin("012-345"));

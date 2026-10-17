@@ -3,15 +3,21 @@ package com.liskovsoft.smartyoutubetv2.common.karaoke;
 import android.annotation.SuppressLint;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.media.AudioManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 
 import com.liskovsoft.sharedutils.helpers.MessageHelpers;
+import com.liskovsoft.sharedutils.helpers.PermissionHelpers;
 import com.liskovsoft.sharedutils.mylogger.Log;
 import com.liskovsoft.smartyoutubetv2.common.R;
+import com.liskovsoft.smartyoutubetv2.common.app.views.SearchView;
+import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
 import com.liskovsoft.smartyoutubetv2.common.prefs.KaraokeData;
+import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokeProtocol;
 
 import java.net.Inet4Address;
@@ -26,9 +32,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * Karaoke mode: phones (or a TV mic) stream the singer's voice, the TV mixes it on top of the video sound.<br/>
  * Stays on across videos until turned off, so mics don't have to reconnect between songs.
+ * While SmartTube is in the background the mics are silent, and the TV mic is released while voice search
+ * (or another app) needs it.
  */
 public class KaraokeManager {
     private static final String TAG = KaraokeManager.class.getSimpleName();
+    private static final long FOREGROUND_CHECK_MS = 1_000;
+    /** A busy network can't fill the screen with "can't connect" messages. */
+    private static final long REJECTION_MESSAGE_INTERVAL_MS = 5_000;
     @SuppressLint("StaticFieldLeak")
     private static KaraokeManager sInstance;
     private final Context mContext;
@@ -41,6 +52,9 @@ public class KaraokeManager {
     private LocalMicCapture mLocalCapture;
     private volatile MicSource mLocalSource;
     private volatile boolean mIsRunning;
+    /** The TV mic didn't work this session, don't retry until the user turns it on again. */
+    private boolean mIsLocalMicFailed;
+    private long mLastRejectionMessageMs;
 
     public interface Listener {
         /**
@@ -63,9 +77,9 @@ public class KaraokeManager {
         }
 
         @Override
-        public void onMicDisconnected(MicSource source) {
+        public void onMicDisconnected(MicSource source, boolean announce) {
             mHandler.post(() -> {
-                if (mIsRunning) {
+                if (mIsRunning && announce) {
                     MessageHelpers.showMessage(mContext, R.string.karaoke_mic_disconnected, source.getName());
                 }
                 notifyChanged();
@@ -91,7 +105,23 @@ public class KaraokeManager {
                     break;
             }
 
-            mHandler.post(() -> MessageHelpers.showMessage(mContext, message, name));
+            mHandler.post(() -> {
+                long nowMs = SystemClock.elapsedRealtime();
+                if (nowMs - mLastRejectionMessageMs > REJECTION_MESSAGE_INTERVAL_MS) {
+                    mLastRejectionMessageMs = nowMs;
+                    MessageHelpers.showMessage(mContext, message, name);
+                }
+            });
+        }
+    };
+
+    private final Runnable mForegroundCheck = new Runnable() {
+        @Override
+        public void run() {
+            if (mIsRunning) {
+                updateForegroundState();
+                mHandler.postDelayed(this, FOREGROUND_CHECK_MS);
+            }
         }
     };
 
@@ -118,7 +148,7 @@ public class KaraokeManager {
             return true;
         }
 
-        KaraokeServer server = new KaraokeServer(mContext, mTvName, mKaraokeData.getLatencyMs(), mServerCallback);
+        KaraokeServer server = new KaraokeServer(mContext, mTvName, mKaraokeData.getTvId(), mKaraokeData.getLatencyMs(), mServerCallback);
 
         server.setPin(mKaraokeData.isPinRequired() ? mKaraokeData.getPin() : null);
 
@@ -134,19 +164,19 @@ public class KaraokeManager {
                 out[count++] = localSource;
             }
             return count;
-        }, () -> mHandler.post(() -> { // don't pretend karaoke works when nothing can be heard
+        }, getFramesPerBurst(), () -> mHandler.post(() -> { // don't pretend karaoke works when nothing can be heard
             if (mIsRunning) {
                 stop();
                 MessageHelpers.showLongMessage(mContext, R.string.karaoke_audio_error);
             }
         }));
         mIsRunning = true;
+        mIsLocalMicFailed = false;
         applySettings();
         mMixer.start();
 
-        if (mKaraokeData.isLocalMicEnabled()) {
-            startLocalMic();
-        }
+        updateForegroundState(); // also opens the TV mic if it's on
+        mHandler.postDelayed(mForegroundCheck, FOREGROUND_CHECK_MS);
 
         notifyChanged();
 
@@ -159,6 +189,7 @@ public class KaraokeManager {
         }
 
         mIsRunning = false;
+        mHandler.removeCallbacks(mForegroundCheck);
 
         // Music processing is a part of the karaoke session only
         VocalRemoverAudioProcessor.setStrength(0);
@@ -187,16 +218,18 @@ public class KaraokeManager {
         mMixer.setVolume(mKaraokeData.getMicVolumePercent() / 100f);
         mMixer.setVoiceEffect(mKaraokeData.getVoiceEffect());
         mMixer.setNoiseGateEnabled(mKaraokeData.isNoiseGateEnabled());
+        mMixer.setAutoLevelEnabled(mKaraokeData.isAutoLevelEnabled());
         mServer.setLatencyMs(mKaraokeData.getLatencyMs());
         VocalRemoverAudioProcessor.setStrength(mKaraokeData.getVocalRemoverPercent() / 100f);
     }
 
     /**
      * Use a mic attached to the TV. RECORD_AUDIO permission should be granted before.
-     * @return false if there's no usable mic
+     * @return false if this device can't record at all (a mic that fails to open later is reported by a message)
      */
     public synchronized boolean setLocalMicEnabled(boolean enabled) {
         mKaraokeData.setLocalMicEnabled(enabled);
+        mIsLocalMicFailed = false;
 
         if (!mIsRunning) {
             return true;
@@ -299,13 +332,37 @@ public class KaraokeManager {
         mListeners.remove(listener);
     }
 
+    /**
+     * Silences the mics while SmartTube is in the background and leaves the TV mic to voice search.
+     */
+    private synchronized void updateForegroundState() {
+        if (!mIsRunning) {
+            return;
+        }
+
+        boolean isAppVisible = Utils.isAppInForegroundFixed();
+        mMixer.setSuspended(!isAppVisible);
+
+        boolean isMicAllowed = isAppVisible && ViewManager.instance(mContext).getTopView() != SearchView.class;
+
+        if (isMicAllowed && mKaraokeData.isLocalMicEnabled() && !mIsLocalMicFailed) {
+            startLocalMic();
+        } else if (!isMicAllowed) {
+            stopLocalMic();
+        }
+    }
+
     private boolean startLocalMic() {
         if (mLocalCapture != null) {
             return true;
         }
 
+        if (!PermissionHelpers.hasMicPermissions(mContext)) {
+            return false; // the player asks for it, then calls setLocalMicEnabled() again
+        }
+
         MicSource source = new MicSource(MicSource.LOCAL_ID, 0, mContext.getString(R.string.karaoke_tv_mic), 20);
-        LocalMicCapture capture = new LocalMicCapture(source);
+        LocalMicCapture capture = new LocalMicCapture(source, failed -> mHandler.post(() -> onLocalMicFailed(failed)));
 
         if (!capture.start()) {
             return false;
@@ -316,6 +373,17 @@ public class KaraokeManager {
         mMixer.wakeUp();
 
         return true;
+    }
+
+    private synchronized void onLocalMicFailed(LocalMicCapture capture) {
+        if (capture != mLocalCapture) {
+            return; // already replaced or stopped
+        }
+
+        stopLocalMic();
+        mIsLocalMicFailed = true;
+        MessageHelpers.showLongMessage(mContext, R.string.karaoke_tv_mic_error);
+        notifyChanged();
     }
 
     private void stopLocalMic() {
@@ -330,6 +398,19 @@ public class KaraokeManager {
     private void notifyChanged() {
         for (Listener listener : mListeners) {
             listener.onKaraokeChanged();
+        }
+    }
+
+    /**
+     * The device's audio output period, so the karaoke output buffer can start as small as possible.
+     */
+    private int getFramesPerBurst() {
+        try {
+            AudioManager audioManager = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
+            String value = audioManager != null ? audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER) : null;
+            return value != null ? Integer.parseInt(value) : 0;
+        } catch (RuntimeException e) {
+            return 0;
         }
     }
 

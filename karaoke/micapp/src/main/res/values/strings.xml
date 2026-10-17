@@ -23,6 +23,7 @@
     <string name="status_pin_locked">Too many wrong PINs. %s lets you try again in a minute.</string>
     <string name="pin_title">TV PIN</string>
     <string name="pin_message">Enter the 6-digit PIN shown on the TV: SmartTube player, mic button, Karaoke menu. You only need it once.</string>
+    <string name="pin_changed">The TV has a new PIN. Enter the PIN shown in the TV\'s Karaoke menu.</string>
     <string name="pin_wrong">Wrong PIN. Check the PIN in the TV\'s Karaoke menu and try again.</string>
     <string name="pin_hint">6-digit PIN</string>
     <string name="pin_connect">Connect</string>
@@ -34,5 +35,14 @@
     <string name="notification_channel">Karaoke mic</string>
     <string name="notification_title">Mic is live</string>
     <string name="notification_text">Singing on %s</string>
+    <string name="notification_title_muted">Mic is muted</string>
+    <string name="notification_title_pin">PIN needed</string>
+    <string name="notification_title_offline">Not connected</string>
+    <string name="notification_connecting">Connecting to %s…</string>
+    <string name="notification_muted">Muted on %s</string>
+    <string name="notification_no_answer">%s isn\'t answering. Is karaoke mode on?</string>
+    <string name="notification_needs_pin">Open SmartTube Mic and enter the PIN shown on %s</string>
     <string name="mic_button_description">Start or stop the microphone</string>
+    <string name="mic_button_start">Start singing on the TV</string>
+    <string name="mic_button_stop">Stop singing</string>
 </resources>

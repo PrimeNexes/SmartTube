@@ -20,9 +20,9 @@ import java.nio.charset.Charset;
  * 20     ...  payload
  * </pre>
  * HELLO (mic to TV, every {@link #HELLO_INTERVAL_MS}): int sample rate, short frame size, byte channels, name,
- * PIN proof (byte length + bytes, see {@link KaraokePairing}).<br/>
+ * PIN proof (byte length + bytes, see {@link KaraokePairing}), followed by the challenge it answers when present.<br/>
  * WELCOME (TV to mic, reply to HELLO, header carries the mic's session id): int echoed sender clock, byte status,
- * byte mic slot, TV name, long pairing challenge.<br/>
+ * byte mic slot, TV name, long pairing challenge, long TV id (random, stable per TV).<br/>
  * AUDIO (mic to TV): mono 16 bit PCM at {@link #SAMPLE_RATE}.<br/>
  * BYE (mic to TV): no payload.
  */
@@ -40,7 +40,7 @@ public final class KaraokeProtocol {
     public static final int TIMEOUT_MS = 4_000;
 
     public static final int MAGIC = 0x53544B4D; // "STKM"
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
     public static final int HEADER_SIZE = 20;
     public static final int MAX_NAME_BYTES = 48;
     public static final int MAX_PACKET_SIZE = HEADER_SIZE + MAX_FRAME_SAMPLES * 2;
@@ -84,6 +84,8 @@ public final class KaraokeProtocol {
         public String name;
         /** Null when the mic has no PIN yet. */
         public byte[] pinProof;
+        /** The challenge the proof was made for (a restarted TV has a new one). */
+        public long challengeEcho;
     }
 
     public static final class Welcome {
@@ -92,6 +94,7 @@ public final class KaraokeProtocol {
         public int slot;
         public String tvName;
         public long challenge;
+        public long tvId;
     }
 
     /**
@@ -133,14 +136,18 @@ public final class KaraokeProtocol {
 
     /**
      * @param pinProof null if the mic doesn't know the PIN (yet)
+     * @param challenge the challenge the proof answers
      */
-    public static void writeHello(ByteBuffer buffer, int sessionId, int seq, int timeMs, String name, byte[] pinProof) {
+    public static void writeHello(ByteBuffer buffer, int sessionId, int seq, int timeMs, String name, byte[] pinProof, long challenge) {
         writeHeader(buffer, TYPE_HELLO, 0, sessionId, seq, timeMs);
         buffer.putInt(SAMPLE_RATE)
                 .putShort((short) FRAME_SAMPLES)
                 .put((byte) CHANNELS);
         putName(buffer, name);
         putBytes(buffer, pinProof);
+        if (pinProof != null) {
+            buffer.putLong(challenge);
+        }
     }
 
     /**
@@ -158,17 +165,26 @@ public final class KaraokeProtocol {
         hello.name = getName(buffer);
         hello.pinProof = getBytes(buffer);
 
+        if (hello.pinProof != null) {
+            if (buffer.remaining() < 8) {
+                hello.pinProof = null; // a proof without its challenge is no proof
+            } else {
+                hello.challengeEcho = buffer.getLong();
+            }
+        }
+
         return hello;
     }
 
     public static void writeWelcome(ByteBuffer buffer, int sessionId, int seq, int timeMs,
-                                    int echoTimeMs, int status, int slot, String tvName, long challenge) {
+                                    int echoTimeMs, int status, int slot, String tvName, long challenge, long tvId) {
         writeHeader(buffer, TYPE_WELCOME, 0, sessionId, seq, timeMs);
         buffer.putInt(echoTimeMs)
                 .put((byte) status)
                 .put((byte) slot);
         putName(buffer, tvName);
-        buffer.putLong(challenge);
+        buffer.putLong(challenge)
+                .putLong(tvId);
     }
 
     /**
@@ -185,11 +201,12 @@ public final class KaraokeProtocol {
         welcome.slot = buffer.get() & 0xFF;
         welcome.tvName = getName(buffer);
 
-        if (buffer.remaining() < 8) {
+        if (buffer.remaining() < 16) {
             return null;
         }
 
         welcome.challenge = buffer.getLong();
+        welcome.tvId = buffer.getLong();
 
         return welcome;
     }
@@ -256,7 +273,9 @@ public final class KaraokeProtocol {
         byte[] bytes = new byte[length];
         buffer.get(bytes);
 
-        return new String(bytes, UTF_8);
+        // Peers may send up to 255 bytes, names shown on screen are kept short
+        String name = new String(bytes, UTF_8);
+        return length > MAX_NAME_BYTES ? new String(encodeName(name), UTF_8) : name;
     }
 
     static byte[] encodeName(String name) {

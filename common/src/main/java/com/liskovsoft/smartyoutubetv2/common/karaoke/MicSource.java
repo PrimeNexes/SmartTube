@@ -1,10 +1,13 @@
 package com.liskovsoft.smartyoutubetv2.common.karaoke;
 
+import android.os.SystemClock;
+
+import com.liskovsoft.smartyoutubetv2.karaoke.core.AutoLevel;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.JitterBuffer;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokeProtocol;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.NoiseGate;
 
-import java.net.SocketAddress;
+import java.net.InetAddress;
 
 /**
  * One microphone (phone over Wi-Fi or a mic plugged into the TV) feeding the karaoke mixer.
@@ -15,8 +18,10 @@ public final class MicSource {
     private final int mSlot;
     private final JitterBuffer mBuffer;
     private final NoiseGate mGate = new NoiseGate(KaraokeProtocol.SAMPLE_RATE);
+    private final AutoLevel mAutoLevel = new AutoLevel(KaraokeProtocol.SAMPLE_RATE);
     private volatile String mName;
-    private volatile SocketAddress mAddress;
+    private volatile InetAddress mHost;
+    private volatile int mPort;
     private volatile long mLastSeenMs;
     private volatile boolean mMuted;
 
@@ -25,7 +30,7 @@ public final class MicSource {
         mSlot = slot;
         mName = name;
         mBuffer = new JitterBuffer(KaraokeProtocol.SAMPLE_RATE, toSamples(targetLatencyMs));
-        mLastSeenMs = System.currentTimeMillis();
+        touch();
     }
 
     public int getId() {
@@ -76,20 +81,27 @@ public final class MicSource {
         }
     }
 
-    SocketAddress getAddress() {
-        return mAddress;
+    void setPeer(InetAddress host, int port) {
+        mHost = host;
+        mPort = port;
     }
 
-    void setAddress(SocketAddress address) {
-        mAddress = address;
+    /**
+     * Allocation free check that a packet came from this mic's phone.
+     */
+    boolean isFrom(InetAddress host, int port) {
+        return port == mPort && host.equals(mHost);
     }
 
     void setMuted(boolean muted) {
         mMuted = muted;
     }
 
+    /**
+     * Monotonic clock: wall clock jumps (NTP) must not drop or keep mics.
+     */
     void touch() {
-        mLastSeenMs = System.currentTimeMillis();
+        mLastSeenMs = SystemClock.elapsedRealtime();
     }
 
     long getLastSeenMs() {
@@ -109,6 +121,13 @@ public final class MicSource {
      */
     NoiseGate getGate() {
         return mGate;
+    }
+
+    /**
+     * Mixer thread only.
+     */
+    AutoLevel getAutoLevel() {
+        return mAutoLevel;
     }
 
     private static int toSamples(int latencyMs) {

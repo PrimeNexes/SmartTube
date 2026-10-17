@@ -172,9 +172,16 @@ public class MainActivity extends Activity implements TvFinder.Listener {
         mTvs.clear();
         mTvs.addAll(tvs);
 
-        // Exactly one TV around and nothing picked yet: just use it
-        if (tvs.size() == 1 && TextUtils.isEmpty(mAddress.getText()) && MicStreamService.getStreamer() == null) {
-            selectTv(tvs.get(0));
+        if (MicStreamService.getStreamer() == null) {
+            String address = mAddress.getText().toString();
+            // Follow the picked TV only if it's gone from its address, never to another TV that has the same name
+            TvFinder.Tv sameTv = hasAddress(tvs, address) ? null : findByName(tvs, mSelectedTvName);
+
+            if (sameTv != null) {
+                selectTv(sameTv); // the TV got a new IP from the router
+            } else if (tvs.size() == 1 && TextUtils.isEmpty(address)) {
+                selectTv(tvs.get(0)); // exactly one TV around and nothing picked yet: just use it
+            }
         }
 
         renderTvs();
@@ -235,17 +242,25 @@ public class MainActivity extends Activity implements TvFinder.Listener {
         boolean isLive = streamer != null;
 
         mMicButton.setActivated(isLive);
+        mMicButton.setContentDescription(getString(isLive ? R.string.mic_button_stop : R.string.mic_button_start));
         mMute.setText(MicStreamService.isMuted() ? R.string.unmute : R.string.mute);
         mLevel.setLevel(isLive ? streamer.getLevel() : 0);
 
         int status = isLive ? streamer.getStatus() : -1;
         if (status == MicStreamer.STATUS_NEEDS_PIN || status == MicStreamer.STATUS_WRONG_PIN) {
-            showPinDialog(status == MicStreamer.STATUS_WRONG_PIN);
+            showPinDialog(status == MicStreamer.STATUS_NEEDS_PIN ? R.string.pin_message :
+                    streamer.isPinChanged() ? R.string.pin_changed : R.string.pin_wrong);
         } else {
             dismissPinDialog();
         }
 
         if (!isLive) {
+            int failure = MicStreamService.consumeLastFailure(); // ended while the app was in the background
+            if (failure == MicStreamer.STATUS_MIC_ERROR) {
+                mLastError = getString(R.string.status_mic_error);
+            } else if (failure == MicStreamer.STATUS_NETWORK_ERROR) {
+                mLastError = getString(R.string.status_network_error, mSelectedTvName != null ? mSelectedTvName : mAddress.getText());
+            }
             mStatus.setText(mLastError != null ? mLastError : getString(R.string.tap_to_sing));
             return;
         }
@@ -290,13 +305,13 @@ public class MainActivity extends Activity implements TvFinder.Listener {
         }
     }
 
-    private void showPinDialog(boolean isWrong) {
+    private void showPinDialog(int messageId) {
         if (mPinDialog != null && mPinDialog.isShowing()) {
             return;
         }
 
         EditText input = new EditText(this);
-        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER); // shown openly on the TV anyway, typos should be visible
         input.setFilters(new InputFilter[] {new InputFilter.LengthFilter(KaraokePairing.PIN_DIGITS)});
         input.setHint(R.string.pin_hint);
 
@@ -307,7 +322,7 @@ public class MainActivity extends Activity implements TvFinder.Listener {
 
         mPinDialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.pin_title)
-                .setMessage(isWrong ? R.string.pin_wrong : R.string.pin_message)
+                .setMessage(messageId)
                 .setView(container)
                 .setCancelable(false)
                 .setPositiveButton(R.string.pin_connect, (dialog, which) -> {
@@ -361,6 +376,38 @@ public class MainActivity extends Activity implements TvFinder.Listener {
             params.topMargin = dp(8);
             mTvsContainer.addView(item, params);
         }
+    }
+
+    /**
+     * @return null if no TV or more than one TV has this name
+     */
+    private static TvFinder.Tv findByName(List<TvFinder.Tv> tvs, String name) {
+        if (name == null) {
+            return null;
+        }
+
+        TvFinder.Tv found = null;
+
+        for (TvFinder.Tv tv : tvs) {
+            if (name.equals(tv.name)) {
+                if (found != null) {
+                    return null; // two TVs with one name: don't guess
+                }
+                found = tv;
+            }
+        }
+
+        return found;
+    }
+
+    private static boolean hasAddress(List<TvFinder.Tv> tvs, String address) {
+        for (TvFinder.Tv tv : tvs) {
+            if (tv.getAddress().equals(address)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void selectTv(TvFinder.Tv tv) {

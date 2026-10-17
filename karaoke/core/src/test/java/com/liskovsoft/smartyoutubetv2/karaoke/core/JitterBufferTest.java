@@ -104,6 +104,29 @@ public class JitterBufferTest {
         assertTrue(buffer.getLevel() <= TARGET);
     }
 
+    @Test
+    public void targetChangeFromAnotherThreadAppliesOnNextFrame() throws InterruptedException {
+        JitterBuffer buffer = new JitterBuffer(48_000, TARGET);
+        Thread ui = new Thread(() -> buffer.setTargetSamples(FRAME));
+        ui.start();
+        ui.join();
+
+        buffer.writePacket(0, packet(1), FRAME); // one frame now reaches the new, smaller target
+        assertEquals(FRAME, buffer.read(new float[FRAME], FRAME));
+        assertEquals(FRAME, buffer.getTargetSamples());
+    }
+
+    @Test
+    public void statsAreReadableWithoutTheLock() {
+        JitterBuffer buffer = new JitterBuffer(48_000, TARGET);
+        buffer.writePacket(0, packet(1), FRAME);
+        buffer.writePacket(2, packet(1), FRAME);
+
+        assertEquals(2, buffer.getPacketCount());
+        assertEquals(1, buffer.getLostCount());
+        assertEquals(FRAME * 3, buffer.getLevel());
+    }
+
     private static ByteBuffer packet(int value) {
         ByteBuffer buffer = ByteBuffer.allocate(FRAME * 2).order(ByteOrder.LITTLE_ENDIAN);
         for (int i = 0; i < FRAME; i++) {

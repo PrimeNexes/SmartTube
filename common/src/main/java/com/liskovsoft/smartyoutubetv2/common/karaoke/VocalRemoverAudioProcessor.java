@@ -55,7 +55,9 @@ public final class VocalRemoverAudioProcessor extends BaseAudioProcessor {
     @Override
     protected void onFlush() {
         if (mRemover != null) {
-            mRemover.reset(); // after seek, don't filter the old position into the new one
+            // After a seek or a speed/key change: don't filter the old position into the new one,
+            // but keep the current strength, so the original singer doesn't flash back
+            mRemover.resetFilters();
         }
     }
 

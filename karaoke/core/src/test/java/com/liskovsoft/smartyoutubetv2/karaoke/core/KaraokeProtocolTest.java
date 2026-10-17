@@ -15,7 +15,7 @@ public class KaraokeProtocolTest {
     @Test
     public void helloRoundTrip() {
         ByteBuffer buffer = ByteBuffer.allocate(KaraokeProtocol.MAX_PACKET_SIZE);
-        KaraokeProtocol.writeHello(buffer, 0x12345678, 7, 123_456, "Pixel 7", null);
+        KaraokeProtocol.writeHello(buffer, 0x12345678, 7, 123_456, "Pixel 7", null, 0);
         buffer.flip();
 
         KaraokeProtocol.Header header = new KaraokeProtocol.Header();
@@ -38,19 +38,50 @@ public class KaraokeProtocolTest {
     public void helloCarriesPinProof() {
         byte[] proof = KaraokePairing.proof("123456", 42L, 7);
         ByteBuffer buffer = ByteBuffer.allocate(KaraokeProtocol.MAX_PACKET_SIZE);
-        KaraokeProtocol.writeHello(buffer, 7, 0, 0, "Phone", proof);
+        KaraokeProtocol.writeHello(buffer, 7, 0, 0, "Phone", proof, 42L);
         buffer.flip();
 
         assertTrue(KaraokeProtocol.readHeader(buffer, new KaraokeProtocol.Header()));
         KaraokeProtocol.Hello hello = KaraokeProtocol.readHello(buffer);
         assertNotNull(hello);
         assertArrayEquals(proof, hello.pinProof);
+        assertEquals(42L, hello.challengeEcho);
+    }
+
+    @Test
+    public void proofWithoutChallengeIsIgnored() {
+        ByteBuffer buffer = ByteBuffer.allocate(KaraokeProtocol.MAX_PACKET_SIZE);
+        KaraokeProtocol.writeHello(buffer, 7, 0, 0, "Phone", KaraokePairing.proof("123456", 42L, 7), 42L);
+        buffer.flip();
+        buffer.limit(buffer.limit() - 8); // challenge cut off
+
+        assertTrue(KaraokeProtocol.readHeader(buffer, new KaraokeProtocol.Header()));
+        KaraokeProtocol.Hello hello = KaraokeProtocol.readHello(buffer);
+        assertNotNull(hello);
+        assertNull(hello.pinProof);
+    }
+
+    @Test
+    public void longPeerNamesAreShortened() {
+        StringBuilder name = new StringBuilder();
+        for (int i = 0; i < 200; i++) {
+            name.append('x');
+        }
+        // Write a 200 byte name by hand, the writer itself would cut it
+        ByteBuffer buffer = ByteBuffer.allocate(KaraokeProtocol.MAX_PACKET_SIZE);
+        KaraokeProtocol.writeHeader(buffer, KaraokeProtocol.TYPE_HELLO, 0, 1, 0, 0);
+        buffer.putInt(KaraokeProtocol.SAMPLE_RATE).putShort((short) KaraokeProtocol.FRAME_SAMPLES).put((byte) 1);
+        buffer.put((byte) 200).put(name.toString().getBytes());
+        buffer.flip();
+
+        assertTrue(KaraokeProtocol.readHeader(buffer, new KaraokeProtocol.Header()));
+        assertEquals(KaraokeProtocol.MAX_NAME_BYTES, KaraokeProtocol.readHello(buffer).name.length());
     }
 
     @Test
     public void welcomeRoundTrip() {
         ByteBuffer buffer = ByteBuffer.allocate(KaraokeProtocol.MAX_PACKET_SIZE);
-        KaraokeProtocol.writeWelcome(buffer, 42, 1, 2, 999, KaraokeProtocol.STATUS_FULL, 3, "Living room TV", -5L);
+        KaraokeProtocol.writeWelcome(buffer, 42, 1, 2, 999, KaraokeProtocol.STATUS_FULL, 3, "Living room TV", -5L, 99L);
         buffer.flip();
 
         KaraokeProtocol.Header header = new KaraokeProtocol.Header();
@@ -64,6 +95,7 @@ public class KaraokeProtocolTest {
         assertEquals(3, welcome.slot);
         assertEquals("Living room TV", welcome.tvName);
         assertEquals(-5L, welcome.challenge);
+        assertEquals(99L, welcome.tvId);
         assertEquals(42, header.sessionId);
     }
 
