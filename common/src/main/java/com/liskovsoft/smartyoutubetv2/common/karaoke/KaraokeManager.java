@@ -208,6 +208,14 @@ public class KaraokeManager {
     }
 
     /**
+     * Someone is singing right now. Any thread.
+     */
+    public boolean isVoiceActive() {
+        KaraokeMixer mixer = mMixer;
+        return mixer != null && mixer.isVoiceActive();
+    }
+
+    /**
      * Pushes {@link KaraokeData} values to the running session.
      */
     public synchronized void applySettings() {

@@ -11,6 +11,8 @@ import android.util.Log;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.AutoTune;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokePairing;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokeProtocol;
+import com.liskovsoft.smartyoutubetv2.karaoke.core.Limiter;
+import com.liskovsoft.smartyoutubetv2.karaoke.core.VoiceLeveler;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -24,7 +26,8 @@ import java.util.Random;
 /**
  * Captures the phone mic and streams it to SmartTube over UDP (see {@link KaraokeProtocol}).<br/>
  * Control thread: says HELLO every second, listens for the TV's WELCOME (status, round trip time).<br/>
- * Capture thread: reads 5 ms frames, auto-tunes them if asked, and sends each one as a datagram right away.
+ * Capture thread: reads 5 ms frames, levels the voice ({@link VoiceLeveler}), auto-tunes it if asked, and sends
+ * each frame as a datagram right away.
  */
 final class MicStreamer {
     private static final String TAG = MicStreamer.class.getSimpleName();
@@ -326,7 +329,9 @@ final class MicStreamer {
 
         short[] frame = new short[FRAME];
         float[] voice = new float[FRAME];
+        VoiceLeveler leveler = new VoiceLeveler(KaraokeProtocol.SAMPLE_RATE, initialGainDb(record.getAudioSource()));
         AutoTune autoTune = new AutoTune(KaraokeProtocol.SAMPLE_RATE, FRAME);
+        Limiter limiter = new Limiter(KaraokeProtocol.SAMPLE_RATE);
         ByteBuffer packet = ByteBuffer.allocate(KaraokeProtocol.MAX_PACKET_SIZE);
         // Reused for every frame: no garbage in the audio loop
         DatagramPacket datagram = new DatagramPacket(packet.array(), packet.capacity(), mTarget);
@@ -344,23 +349,29 @@ final class MicStreamer {
                     break;
                 }
 
-                // On the raw mic, so the mic level doesn't change what counts as silence. Off: untouched.
-                autoTune.setMode(mAutoTuneMode);
-                autoTune.setKey(mAutoTuneKey);
                 for (int i = 0; i < read; i++) {
                     voice[i] = frame[i] * (1f / 32768);
                 }
+
+                // Voice first: a strong, even level, the TV heard between phrases turned down
+                leveler.process(voice, read);
+
+                autoTune.setMode(mAutoTuneMode);
+                autoTune.setKey(mAutoTuneKey);
                 autoTune.process(voice, read);
                 mSungNote = autoTune.getNote();
                 mTargetNote = autoTune.getTargetNote();
 
                 boolean muted = mIsMuted;
-                float gain = (muted ? 0 : mGain) * 32768;
-                int peak = 0;
-
+                float gain = muted ? 0 : mGain;
                 for (int i = 0; i < read; i++) {
-                    int sample = Math.round(voice[i] * gain);
-                    sample = Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, sample));
+                    voice[i] *= gain;
+                }
+                limiter.process(voice, read); // loud notes don't clip
+
+                int peak = 0;
+                for (int i = 0; i < read; i++) {
+                    int sample = Math.round(voice[i] * Short.MAX_VALUE);
                     frame[i] = (short) sample;
                     peak = Math.max(peak, Math.abs(sample));
                 }
@@ -403,6 +414,19 @@ final class MicStreamer {
                 Log.w(TAG, "Send error: " + e.getMessage());
             }
         }
+    }
+
+    /**
+     * Starting gain of the {@link VoiceLeveler} for the capture path: the low latency ones are recorded about 18 dB
+     * quieter (CDD: -36 dBFS RMS at 94 dB SPL, against about -22 dBFS at 90 dB SPL for voice recognition).
+     */
+    private static float initialGainDb(int source) {
+        if ((Build.VERSION.SDK_INT >= 29 && source == MediaRecorder.AudioSource.VOICE_PERFORMANCE) ||
+                (Build.VERSION.SDK_INT >= 24 && source == MediaRecorder.AudioSource.UNPROCESSED)) {
+            return 18;
+        }
+
+        return source == MediaRecorder.AudioSource.VOICE_RECOGNITION ? 4 : 0;
     }
 
     /**

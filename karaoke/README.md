@@ -9,9 +9,9 @@ Each phone can auto-tune its singer.
  ┌──────────────────────────┐   UDP, 5 ms frames   ┌──────────────────────────────────────────────┐
  │ AudioRecord 48 kHz mono  │ ───────────────────▶ │ KaraokeServer ─▶ jitter buffer per mic        │
  │ (VOICE_PERFORMANCE)      │ ◀─────────────────── │   (NSD advertised)       │                    │
- │ auto-tune, gain / mute   │   WELCOME, RTT       │ TV mic (USB / remote) ───┤                    │
+ │ leveler, auto-tune, gain │   WELCOME, RTT       │ TV mic (USB / remote) ───┤                    │
  └──────────────────────────┘                      │                     KaraokeMixer              │
-                                                   │   gate ─▶ auto level ─▶ sum ─▶ volume ─▶ fx  │
+                                                   │   gate ─▶ auto level ─▶ sum ─▶ volume ─▶ EQ  │
                                                    │   ─▶ limiter ─▶ low latency AudioTrack ──┐    │
                                                    │                                         ▼    │
                                                    │ ExoPlayer: video audio ─▶ vocal remover ─▶   │
@@ -45,7 +45,7 @@ menu, with a long press on the mic button, or when SmartTube exits.
 | Key (semitones) | −6…+6, pitch shift without changing tempo; stays right when the playback speed changes |
 | Music volume (while singing) | 0–100% of the video's volume while karaoke is on, to balance it against the voices. The normal volume comes back when karaoke turns off |
 | Mic latency | Low 25 ms / Normal 50 ms / Stable 100 ms of jitter buffering per mic |
-| Mic options | Auto mic level (evens out quiet and loud phones and singers, on by default); noise gate (mutes mics between phrases); use the TV's own mic; require a PIN for phone mics (on by default) |
+| Mic options | Auto mic level (evens out quiet and loud phones and singers, on by default); lower the music while someone sings (on by default); noise gate (mutes mics between phrases); use the TV's own mic; require a PIN for phone mics (on by default) |
 | New PIN | Makes a new PIN, shows it and disconnects the phones paired with the old one. Those phones say "The TV has a new PIN" and ask for it |
 | Find a karaoke version | Searches YouTube for "<song title> karaoke" |
 
@@ -59,6 +59,34 @@ connected, so singing goes on when you come back. Android may also pause SmartTu
 "Use the TV's own mic" is remembered and starts with karaoke mode. SmartTube lets go of the mic while it's in the
 background or its voice search is open, so voice search and other apps can use it.
 The player button can be hidden in Settings → Player → Player buttons → Karaoke.
+
+## Voice first
+
+The voice should be clearly louder than the music and easy to understand. Phone mics and YouTube music make that
+hard: the low latency capture path the phone app uses (VOICE_PERFORMANCE) is recorded very quietly by spec (about
+-36 dBFS RMS for a loud voice; on a Pixel 6 normal singing came in around -45 dBFS), while YouTube music is mastered
+loud (about -14 LUFS). Before this was tuned, singing ended up some 13 dB under the music, and the TV's noise gate
+cut in and out on it.
+
+- Phone (`VoiceLeveler`, before sending): high pass at 90 Hz (handling noise, pops), then the voice is brought to
+  -18 dBFS RMS. It learns only while someone sings (voice is well above a tracked floor of room and TV sound), starts
+  at +18 dB on the quiet capture paths and goes up to +30 dB. Between phrases what the phone hears (the TV, and the
+  singer's own voice from the speakers) is turned down 15 dB. A limiter keeps loud notes from clipping.
+- TV: the noise gate opens at -40 dBFS and auto level aims at -15 dBFS RMS (up to +24 dB for mics that don't level
+  themselves). The voice gets an EQ (cut below 100 Hz, -2 dB at 300 Hz against mud, +3.5 dB at 3 kHz presence) and is
+  played in stereo (some TVs play mono tracks 3 dB quieter).
+- Music steps back by 6 dB while someone sings (`MusicDucker`): down in ~0.1 s, stays down through breaths and short
+  gaps (1.5 s), back up over ~1 s. "Lower the music while someone sings" in Mic options turns it off.
+- Lost packets and network hiccups no longer drop to silence (a click every lost 5 ms packet): the jitter buffer
+  continues the voice by repeating its last pitch period for 10 ms, fades it out over 50 ms and blends back into the
+  real audio.
+
+Simulated with Pixel-like levels (singing at -45 dBFS RMS, the TV heard 20 dB lower, 2% packet loss, music at
+-14 dBFS): before, the voice reached the speakers at -27.6 dBFS, 13.6 dB under the music; now at -17.3 dBFS,
+2.7 dB over the music while singing, with the TV sound between lines 22 dB under the voice until the gate closes.
+
+Tips: sing into the bottom edge of the phone (where the mic is), about a hand's width away, and keep the phone away
+from the TV speakers. For even more voice, raise Mic volume on the TV (up to 300%).
 
 ## Auto-tune (phone)
 
@@ -108,7 +136,8 @@ The voice you hear is delayed by phone capture + Wi-Fi + jitter buffer + TV audi
 - Put the phone on **5 GHz Wi-Fi**; connect the TV by Ethernet if you can.
 - Use **Mic latency → Low** when the Wi-Fi is good. Watch "loss" in Connected mics; switch back to Normal if it climbs.
 - Turn on the TV's **Game mode** / low latency audio and avoid Bluetooth speakers or soundbars that add delay.
-- Hold the phone close to your mouth and away from the TV speakers to avoid feedback (howling). Keep the noise gate on.
+- Sing into the bottom edge of the phone (the mic) from about a hand's width, away from the TV speakers, to avoid
+  feedback (howling). Keep the noise gate on.
 
 ### Good to know
 
@@ -139,7 +168,7 @@ Use JDK 17. On an Apple Silicon Mac without Rosetta, the existing `exoplayer-lib
 
 | Path | What |
 |---|---|
-| `karaoke/core` | Pure Java, shared by both apps, JVM unit tested: `KaraokeProtocol`, `KaraokePairing`, `PinChecker`, `PairingGuard`, `JitterBuffer`, `VocalRemover`, `AutoLevel`, `VoiceReverb`, `NoiseGate`, `Limiter`, `Biquad`, `KaraokeSearch`, `PitchDetector`, `PitchShifter`, `AutoTune` |
+| `karaoke/core` | Pure Java, shared by both apps, JVM unit tested: `KaraokeProtocol`, `KaraokePairing`, `PinChecker`, `PairingGuard`, `JitterBuffer`, `VocalRemover`, `AutoLevel`, `VoiceReverb`, `NoiseGate`, `Limiter`, `Biquad`, `KaraokeSearch`, `PitchDetector`, `PitchShifter`, `AutoTune`, `VoiceLeveler`, `MusicDucker` |
 | `common/.../common/karaoke` | TV side: `KaraokeManager` (public API), `KaraokeServer` (UDP + NSD), `KaraokeMixer` (AudioTrack), `LocalMicCapture`, `MicSource`, `VocalRemoverAudioProcessor` (ExoPlayer) |
 | `common/.../controllers/KaraokeController.java` | Player button and Karaoke menu |
 | `common/.../prefs/KaraokeData.java` | Saved karaoke settings |
@@ -177,8 +206,9 @@ so a phone that New PIN disconnected can't guess the new PIN faster than anyone 
 The phone saves PINs per TV id, a random id the TV makes once and sends in WELCOME, so TVs with the same name don't
 share PINs.
 
-A mic that sends nothing for 4 s is dropped. Lost packets become silence, late ones are discarded, and the jitter
-buffer corrects clock drift between phone and TV by ±1 sample per frame.
+A mic that sends nothing for 4 s is dropped. Lost packets and underruns are concealed (the voice continues for
+up to 60 ms, see Voice first), late packets are discarded, and the jitter buffer corrects clock drift between phone
+and TV by ±1 sample per frame.
 
 ## Privacy and security
 
@@ -200,7 +230,7 @@ buffer corrects clock drift between phone and TV by ±1 sample per frame.
 
 ## Testing done
 
-- `:karaokecore:test`: 77 unit tests (protocol round trips and truncated packets, jitter buffer
+- `:karaokecore:test`: 93 unit tests (protocol round trips and truncated packets, jitter buffer
   loss/late/restart/drift/burst and cross-thread target changes, vocal remover removes centred 300 Hz/1 kHz/3 kHz,
   keeps bass, cymbals and stereo content, has no dip at the crossovers, bypasses bit-exact and cleans the centre
   channel of 5.1, auto level, reverb tails decay without NaN, limiter ceiling, noise gate, karaoke search queries,
@@ -209,7 +239,11 @@ buffer corrects clock drift between phone and TV by ±1 sample per frame.
   fundamental, glides followed, noise and silence have no pitch, the shifter is a pure delay at ratio 1, shifts by
   exact semitones, doesn't click at splices even with a wrong period and keeps its delay in range, Robot snaps to the
   nearest note, keys pick the right note, Natural keeps vibrato and Robot flattens it, no flapping between two notes,
-  noise passes unchanged, switching on and off mid-song doesn't click, Off is bit exact).
+  noise passes unchanged, switching on and off mid-song doesn't click, Off is bit exact; and for voice first: a quiet
+  phone mic comes up to the target and a loud one down, the TV sound between phrases ends up 35 dB under the voice,
+  TV sound alone doesn't raise the gain, steady singing doesn't pump, rumble is removed, the music ducker's timing,
+  peaking EQ and high pass response, a lost packet is concealed within 3% of the real audio, long losses fade to
+  silence, underruns continue the voice and blend back without clicks).
 - Auto-tune on generated audio (macOS `say`, a singing voice detuned by up to 45 cents): voiced frames within
   10 cents of a note went from 25% to 67% (Natural), 81% (Strong) and 91% (Robot, 97% on held notes, mean 3 cents
   off). On the emulator: the Auto-tune card, mode and key menus (saved), streaming to the TV with Robot on.

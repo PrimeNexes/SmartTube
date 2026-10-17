@@ -6,12 +6,12 @@ package com.liskovsoft.smartyoutubetv2.karaoke.core;
  * target, adapts slowly (no pumping) and only while someone sings, so room noise isn't pulled up between phrases.
  */
 public final class AutoLevel {
-    /** ~ -18 dBFS RMS: about as loud as typical YouTube music. */
-    public static final float TARGET_RMS = 0.125f;
-    public static final float MAX_GAIN = 8f; // +18 dB
+    /** ~ -15 dBFS RMS: a bit over typical YouTube music (about -14 LUFS), the voice comes first. */
+    public static final float TARGET_RMS = 0.178f;
+    public static final float MAX_GAIN = 16f; // +24 dB, for quiet mics that don't level themselves
     public static final float MIN_GAIN = 0.25f; // -12 dB
-    /** Below ~ -45 dBFS nobody is singing: keep the current gain. */
-    private static final float ACTIVITY_RMS = 0.0056f;
+    /** Below ~ -50 dBFS nobody is singing: keep the current gain. */
+    private static final float ACTIVITY_RMS = 0.0032f;
     private static final float DETECTOR_SECONDS = 0.1f;
     private static final float ATTACK_SECONDS = 0.05f; // turn down fast when it gets loud
     private static final float RELEASE_SECONDS = 1.5f; // turn up slowly

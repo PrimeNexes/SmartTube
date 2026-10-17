@@ -55,7 +55,7 @@ public class ProtocolFlowTest {
         }
 
         float[] out = new float[KaraokeProtocol.FRAME_SAMPLES];
-        float[] expected = {1000, 2000, 0, 4000}; // the lost frame plays as silence
+        float[] expected = {1000, 2000, 2000, 4000}; // the lost frame continues the one before (concealment)
         for (float value : expected) {
             buffer.read(out, out.length);
             assertEquals(value / 32768f, out[100], 1e-6);

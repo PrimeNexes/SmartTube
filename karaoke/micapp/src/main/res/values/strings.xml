@@ -31,7 +31,7 @@
     <string name="pick_tv_first">Pick a TV or type its address</string>
     <string name="stop_to_switch">Stop singing to switch TVs</string>
     <string name="mic_permission_needed">Microphone permission is needed to sing</string>
-    <string name="tips">Tips: hold the phone close to your mouth and away from the TV speakers. Use 5 GHz Wi-Fi for the lowest delay. Sound settings (echo, volume, vocal remover, key) are in the Karaoke menu on the TV.</string>
+    <string name="tips">Tips: sing into the bottom edge of the phone (that\'s where the mic is), about a hand\'s width from your mouth, and keep it away from the TV speakers. The app levels your voice by itself. Use 5 GHz Wi-Fi for the lowest delay. Sound settings (echo, volume, vocal remover, key) are in the Karaoke menu on the TV.</string>
     <string name="notification_channel">Karaoke mic</string>
     <string name="notification_title">Mic is live</string>
     <string name="notification_text">Singing on %s</string>

@@ -36,6 +36,17 @@ public final class Biquad {
         return new Biquad((1 + cos) / 2, -(1 + cos), (1 + cos) / 2, 1 + alpha, -2 * cos, 1 - alpha);
     }
 
+    /**
+     * Bell EQ: boosts or cuts around a frequency.
+     */
+    public static Biquad peaking(int sampleRate, float frequencyHz, float q, float gainDb) {
+        double a = Math.pow(10, gainDb / 40);
+        double w0 = 2 * Math.PI * frequencyHz / sampleRate;
+        double cos = Math.cos(w0);
+        double alpha = Math.sin(w0) / (2 * q);
+        return new Biquad(1 + alpha * a, -2 * cos, 1 - alpha * a, 1 + alpha / a, -2 * cos, 1 - alpha / a);
+    }
+
     public float process(float x) {
         float y = mB0 * x + mZ1;
         mZ1 = mB1 * x - mA1 * y + mZ2;

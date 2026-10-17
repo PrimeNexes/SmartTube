@@ -766,6 +766,7 @@
     <string name="karaoke_new_pin_done">New PIN: %s. Phones enter it again</string>
     <string name="karaoke_how_to_connect_pin">Connect a microphone · PIN %s</string>
     <string name="karaoke_mics_count">Connected mics: %d</string>
+    <string name="karaoke_duck_music">Lower the music while someone sings</string>
     <string name="karaoke_auto_level">Auto mic level (evens out quiet and loud singers)</string>
     <string name="karaoke_not_with_dolby">not with a Dolby audio track</string>
     <string name="karaoke_not_with_tunneling">off with tunneled playback</string>

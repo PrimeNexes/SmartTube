@@ -3,6 +3,8 @@ package com.liskovsoft.smartyoutubetv2.common.app.models.playback.controllers;
 import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 
 import com.liskovsoft.sharedutils.helpers.MessageHelpers;
@@ -23,6 +25,7 @@ import com.liskovsoft.smartyoutubetv2.common.prefs.KaraokeData;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.FormatItem;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokePairing;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokeSearch;
+import com.liskovsoft.smartyoutubetv2.karaoke.core.MusicDucker;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.VoiceReverb;
 
 import java.util.ArrayList;
@@ -34,6 +37,13 @@ import java.util.Locale;
  */
 public class KaraokeController extends BasePlayerController implements KaraokeManager.Listener {
     private static final int[] VOCAL_REMOVER_LEVELS = {0, 50, 75, 100};
+    private static final long DUCK_TICK_MS = 50;
+    private final Handler mHandler = new Handler(Looper.getMainLooper());
+    private final MusicDucker mDucker = new MusicDucker();
+    private final Runnable mDuckTick = this::duckTick;
+    private boolean mIsDuckTickScheduled;
+    /** Music multiplier while someone sings, 1 otherwise. */
+    private float mDuckGain = 1;
     private KaraokeManager mKaraokeManager;
     private KaraokeData mKaraokeData;
     /** Player volume SmartTube set for the current video, before the karaoke music level. -1 if not applied. */
@@ -62,6 +72,8 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
             applyKey();
             applyMusicVolume();
         }
+
+        updateDucking();
     }
 
     @Override
@@ -78,6 +90,7 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
         // Karaoke may also stop on its own (audio output failure): music goes back to normal either way
         applyKey();
         applyMusicVolume();
+        updateDucking();
     }
 
     @Override
@@ -186,7 +199,50 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
             mMusicBaseVolume = getPlayer().getVolume();
         }
 
-        getPlayer().setVolume(mMusicBaseVolume * mKaraokeData.getMusicVolumePercent() / 100f);
+        getPlayer().setVolume(mMusicBaseVolume * mKaraokeData.getMusicVolumePercent() / 100f * mDuckGain);
+    }
+
+    /**
+     * Voice first: the music steps back while someone sings (see {@link MusicDucker}).
+     */
+    private void updateDucking() {
+        boolean isWanted = isRunning() && mKaraokeData.isMusicDuckingEnabled() && getPlayer() != null;
+
+        if (isWanted && !mIsDuckTickScheduled) {
+            mIsDuckTickScheduled = true;
+            mHandler.postDelayed(mDuckTick, DUCK_TICK_MS);
+        } else if (!isWanted && mIsDuckTickScheduled) {
+            mIsDuckTickScheduled = false;
+            mHandler.removeCallbacks(mDuckTick);
+            resetDucking();
+        }
+    }
+
+    private void duckTick() {
+        if (!isRunning() || !mKaraokeData.isMusicDuckingEnabled() || getPlayer() == null) {
+            mIsDuckTickScheduled = false;
+            resetDucking();
+            return;
+        }
+
+        float gain = mDucker.update(mKaraokeManager.isVoiceActive(), DUCK_TICK_MS);
+
+        // AudioTrack volume changes are ramped by the system, small steps are smooth
+        if (Math.abs(gain - mDuckGain) > 0.005f || (gain > 0.995f && mDuckGain != 1)) {
+            mDuckGain = gain > 0.995f ? 1 : gain;
+            applyMusicVolume();
+        }
+
+        mHandler.postDelayed(mDuckTick, DUCK_TICK_MS);
+    }
+
+    private void resetDucking() {
+        mDucker.reset();
+
+        if (mDuckGain != 1) {
+            mDuckGain = 1;
+            applyMusicVolume();
+        }
     }
 
     private boolean isTunneling() {
@@ -402,6 +458,11 @@ public class KaraokeController extends BasePlayerController implements KaraokeMa
             mKaraokeData.setAutoLevelEnabled(option.isSelected());
             mKaraokeManager.applySettings();
         }, mKaraokeData.isAutoLevelEnabled()));
+
+        options.add(UiOptionItem.from(context.getString(R.string.karaoke_duck_music), option -> {
+            mKaraokeData.setMusicDuckingEnabled(option.isSelected());
+            updateDucking();
+        }, mKaraokeData.isMusicDuckingEnabled()));
 
         options.add(UiOptionItem.from(context.getString(R.string.karaoke_noise_gate), option -> {
             mKaraokeData.setNoiseGateEnabled(option.isSelected());

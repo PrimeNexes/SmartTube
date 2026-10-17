@@ -5,8 +5,11 @@ package com.liskovsoft.smartyoutubetv2.karaoke.core;
  * (less mud and less risk of acoustic feedback).
  */
 public final class NoiseGate {
-    /** ~ -38 dBFS. Phone mics held close to the mouth are way louder while singing. */
-    public static final float DEFAULT_THRESHOLD = 0.0125f;
+    /**
+     * ~ -40 dBFS peak. The phone app sends singing at about -18 dBFS RMS and turns down what it hears between
+     * phrases, so soft singing stays well above this and the TV sound picked up by the phone stays below.
+     */
+    public static final float DEFAULT_THRESHOLD = 0.01f;
     private final float mEnvelopeDecay;
     private final float mAttack;
     private final float mRelease;

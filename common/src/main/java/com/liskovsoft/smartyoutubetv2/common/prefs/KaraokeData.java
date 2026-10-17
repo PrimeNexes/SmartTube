@@ -33,6 +33,7 @@ public class KaraokeData extends DataChangeBase {
     private boolean mIsPinRequired;
     private String mPin;
     private boolean mIsAutoLevelEnabled;
+    private boolean mIsMusicDuckingEnabled;
     private long mTvId;
     private int mMusicVolumePercent;
 
@@ -128,6 +129,18 @@ public class KaraokeData extends DataChangeBase {
 
     public void setNoiseGateEnabled(boolean enabled) {
         mIsNoiseGateEnabled = enabled;
+        persistState();
+    }
+
+    /**
+     * Lower the music while someone sings.
+     */
+    public boolean isMusicDuckingEnabled() {
+        return mIsMusicDuckingEnabled;
+    }
+
+    public void setMusicDuckingEnabled(boolean enabled) {
+        mIsMusicDuckingEnabled = enabled;
         persistState();
     }
 
@@ -228,13 +241,14 @@ public class KaraokeData extends DataChangeBase {
         mIsAutoLevelEnabled = Helpers.parseBoolean(split, 10, true);
         mTvId = Helpers.parseLong(split, 11, 0);
         mMusicVolumePercent = Helpers.parseInt(split, 12, 100);
+        mIsMusicDuckingEnabled = Helpers.parseBoolean(split, 13, true);
     }
 
     private void persistState() {
         mAppPrefs.setData(KARAOKE_DATA, Helpers.mergeData(
                 mMicVolumePercent, mVoiceEffect, mVocalRemoverPercent, mKeySemitones, mLatencyMode,
                 mIsNoiseGateEnabled, mIsLocalMicEnabled, mPort, mIsPinRequired, mPin, mIsAutoLevelEnabled,
-                mTvId, mMusicVolumePercent
+                mTvId, mMusicVolumePercent, mIsMusicDuckingEnabled
         ));
 
         onDataChange();

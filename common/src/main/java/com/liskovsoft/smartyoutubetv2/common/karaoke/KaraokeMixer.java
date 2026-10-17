@@ -11,6 +11,7 @@ import android.os.SystemClock;
 import androidx.annotation.RequiresApi;
 
 import com.liskovsoft.sharedutils.mylogger.Log;
+import com.liskovsoft.smartyoutubetv2.karaoke.core.Biquad;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokeProtocol;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.Limiter;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.VoiceReverb;
@@ -18,8 +19,9 @@ import com.liskovsoft.smartyoutubetv2.karaoke.core.VoiceReverb;
 import java.util.Arrays;
 
 /**
- * Mixes all mics, adds voice effects and plays the result through its own low latency AudioTrack.
- * The system mixer puts it on top of the video sound, so the music player isn't touched at all.<br/>
+ * Mixes all mics, shapes the voice to stand out from the music (less boom and mud, more presence), adds voice
+ * effects and plays the result through its own low latency AudioTrack. The system mixer puts it on top of the video
+ * sound, so the music player isn't touched at all.<br/>
  * The loop doesn't allocate, so the garbage collector can't cause audio glitches.
  */
 final class KaraokeMixer {
@@ -32,6 +34,8 @@ final class KaraokeMixer {
     private static final int MAX_TRACK_RESTARTS = 3;
     private static final long TRACK_RESTART_WINDOW_MS = 60_000;
     private static final long TRACK_RESTART_DELAY_MS = 300;
+    /** Without a gate: louder than this (~ -50 dBFS RMS) is someone singing. */
+    private static final float VOICE_RMS = 0.003f;
     private final SourceProvider mProvider;
     private final int mFramesPerBurst;
     private final Runnable mOnFailure;
@@ -42,6 +46,7 @@ final class KaraokeMixer {
     private volatile boolean mIsNoiseGateEnabled = true;
     private volatile boolean mIsAutoLevelEnabled = true;
     private volatile boolean mIsSuspended;
+    private volatile boolean mIsVoiceActive;
     private Thread mThread;
 
     interface SourceProvider {
@@ -108,6 +113,13 @@ final class KaraokeMixer {
     }
 
     /**
+     * Someone is singing right now (a mic's gate is open). Any thread.
+     */
+    boolean isVoiceActive() {
+        return mIsVoiceActive;
+    }
+
+    /**
      * SmartTube went to the background: stop playing the mics over other apps. They keep their connection.
      */
     void setSuspended(boolean suspended) {
@@ -124,7 +136,11 @@ final class KaraokeMixer {
         MicSource[] sources = new MicSource[MAX_SOURCES];
         float[] mix = new float[FRAME];
         float[] voice = new float[FRAME];
-        short[] pcm = new short[FRAME];
+        short[] pcm = new short[FRAME * 2]; // stereo: mono tracks may play 3 dB quieter on some TVs
+        // Voice EQ: rumble and boom out, a little less mud, more presence so words cut through the music
+        Biquad lowCut = Biquad.highPass(RATE, 100, Biquad.Q_BUTTERWORTH);
+        Biquad mud = Biquad.peaking(RATE, 300, 1, -2);
+        Biquad presence = Biquad.peaking(RATE, 3_000, 0.9f, 3.5f);
         VoiceReverb reverb = new VoiceReverb(RATE);
         Limiter limiter = new Limiter(RATE);
         AudioTrack track = null; // opened when the first mic arrives
@@ -139,6 +155,7 @@ final class KaraokeMixer {
                 int count = mIsSuspended ? 0 : mProvider.getSources(sources);
 
                 if (count == 0) {
+                    mIsVoiceActive = false;
                     if (isPlaying) { // nobody's singing, release the audio path
                         track.pause();
                         track.flush();
@@ -172,16 +189,22 @@ final class KaraokeMixer {
 
                 mixVoices(sources, count, mix, voice);
 
+                for (int j = 0; j < FRAME; j++) {
+                    mix[j] = presence.process(mud.process(lowCut.process(mix[j])));
+                }
+
                 reverb.setPreset(mVoiceEffect);
                 reverb.process(mix, FRAME);
                 limiter.process(mix, FRAME);
 
                 for (int j = 0; j < FRAME; j++) {
-                    pcm[j] = (short) (mix[j] * Short.MAX_VALUE);
+                    short value = (short) (mix[j] * Short.MAX_VALUE);
+                    pcm[j * 2] = value;
+                    pcm[j * 2 + 1] = value;
                 }
 
                 // Blocking write paces the loop at the speed of the DAC
-                int written = track.write(pcm, 0, FRAME);
+                int written = track.write(pcm, 0, pcm.length);
 
                 if (written < 0) { // e.g. ERROR_DEAD_OBJECT after the output device changed
                     Log.e(TAG, "Karaoke audio output error %s, reopening", written);
@@ -231,6 +254,7 @@ final class KaraokeMixer {
         Arrays.fill(mix, 0);
         boolean gateEnabled = mIsNoiseGateEnabled;
         boolean autoLevelEnabled = mIsAutoLevelEnabled;
+        boolean isVoiceActive = false;
 
         for (int i = 0; i < count; i++) {
             MicSource source = sources[i];
@@ -240,6 +264,9 @@ final class KaraokeMixer {
 
             if (gateEnabled) {
                 source.getGate().process(voice, FRAME);
+                isVoiceActive |= source.getGate().isOpen();
+            } else {
+                isVoiceActive |= rms(voice) > VOICE_RMS;
             }
 
             if (autoLevelEnabled) {
@@ -255,6 +282,16 @@ final class KaraokeMixer {
         for (int j = 0; j < FRAME; j++) {
             mix[j] *= volume;
         }
+
+        mIsVoiceActive = isVoiceActive;
+    }
+
+    private static float rms(float[] frame) {
+        float sum = 0;
+        for (float value : frame) {
+            sum += value * value;
+        }
+        return (float) Math.sqrt(sum / frame.length);
     }
 
     private void fail() {
@@ -297,10 +334,10 @@ final class KaraokeMixer {
 
     @SuppressWarnings("deprecation")
     private static AudioTrack createTrack(int framesPerBurst) {
-        int channelMask = AudioFormat.CHANNEL_OUT_MONO;
+        int channelMask = AudioFormat.CHANNEL_OUT_STEREO;
         int encoding = AudioFormat.ENCODING_PCM_16BIT;
         int minBufferBytes = AudioTrack.getMinBufferSize(RATE, channelMask, encoding);
-        int bufferBytes = Math.max(minBufferBytes, FRAME * 2 * 4);
+        int bufferBytes = Math.max(minBufferBytes, FRAME * 4 * 4); // 4 frames of 16 bit stereo
         AudioTrack track;
 
         try {

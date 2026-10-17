@@ -6,7 +6,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Audio jitter buffer for one network mic. One producer (network thread), one consumer (mixer thread).<br/>
  * - Holds playback until {@link #setTargetSamples target} samples are queued, again after every underrun.<br/>
- * - Fills lost packets with silence so timing stays aligned, drops late/duplicate packets.<br/>
+ * - Conceals lost packets and underruns: the voice goes on by repeating its last pitch period, fading out after
+ *   10 ms, then blends back into the real audio. Silence instead would click on every lost 5 ms packet.<br/>
+ * - Drops late/duplicate packets.<br/>
  * - Compensates clock drift between the phone ADC and the TV DAC by consuming one sample more or less per frame
  *   (inaudible ~0.4% rate change) whenever the queue drifts away from the target.<br/>
  * Only the two audio threads take the lock. Stats and target changes from other threads (UI) go through
@@ -15,6 +17,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class JitterBuffer {
     /** Bigger sequence gap means the sender restarted or the network was gone for a while. */
     private static final int MAX_GAP_PACKETS = 20;
+    // Concealment, in samples at 48 kHz
+    private static final int MIN_PERIOD = 48; // 1 kHz
+    private static final int MAX_PERIOD = 640; // 75 Hz
+    private static final int MATCH = 160;
+    private static final int CROSSFADE = 96; // 2 ms
+    private static final int FULL_LEVEL = 480; // then fades out
+    private static final int FADE = 2_400;
     private final short[] mRing;
     private final int mMask;
     private final AtomicInteger mPendingTarget = new AtomicInteger(-1);
@@ -26,6 +35,14 @@ public final class JitterBuffer {
     private boolean mBuffering = true;
     private boolean mHasSeq;
     private int mExpectedSeq;
+    /** Where audio of the current stream starts: concealment doesn't reach before it. */
+    private long mHistoryStart;
+    private final float[] mHistory = new float[MATCH + MAX_PERIOD];
+    // Concealment of an underrun, continued while buffering
+    private boolean mIsConcealing;
+    private long mConcealEnd;
+    private int mConcealPeriod;
+    private int mConcealed;
     // Written under the lock by one thread, read by anyone
     private volatile int mLevel;
     private volatile long mPacketCount;
@@ -61,18 +78,27 @@ public final class JitterBuffer {
     public synchronized void writePacket(int seq, ByteBuffer pcm, int sampleCount) {
         applyPendingTarget();
 
+        long concealEnd = -1;
+        int period = 0;
+        int concealed = 0;
+
         if (mHasSeq) {
             int gap = seq - mExpectedSeq; // overflow safe
 
             if (gap > MAX_GAP_PACKETS || gap < -MAX_GAP_PACKETS) {
                 resetInt();
             } else if (gap < 0) {
-                mLateCount++; // its time slot is already filled with silence or played
+                mLateCount++; // its time slot is already filled or played
                 return;
+            } else if (gap > 0 && mIsConcealing && mWritePos == mReadPos) {
+                mLostCount += gap; // the reader ran dry and already made up audio for this gap: no second copy
             } else if (gap > 0) {
                 mLostCount += gap;
-                for (int i = 0; i < gap * sampleCount; i++) {
-                    put((short) 0);
+                concealEnd = mWritePos;
+                period = findPeriod(concealEnd);
+                concealed = gap * sampleCount;
+                for (int i = 0; i < concealed; i++) {
+                    put(concealSample(concealEnd, period, i));
                 }
             }
         }
@@ -82,7 +108,12 @@ public final class JitterBuffer {
         mPacketCount++;
 
         for (int i = 0; i < sampleCount; i++) {
-            put(pcm.getShort());
+            float value = pcm.getShort() / 32768f;
+            if (concealEnd >= 0 && i < CROSSFADE) { // from the made up audio into the real one
+                float weight = (i + 1f) / (CROSSFADE + 1);
+                value = value * weight + concealSample(concealEnd, period, concealed + i) * (1 - weight);
+            }
+            put(value);
         }
 
         updateLevel();
@@ -103,8 +134,8 @@ public final class JitterBuffer {
     }
 
     /**
-     * Fills the output with the next frame, -1 .. 1 range. Missing audio is replaced with silence.
-     * @return number of real (not padded) samples
+     * Fills the output with the next frame, -1 .. 1 range. Missing audio is concealed, then silent.
+     * @return number of real (not made up) samples
      */
     public synchronized int read(float[] out, int count) {
         applyPendingTarget();
@@ -113,16 +144,20 @@ public final class JitterBuffer {
 
         if (mBuffering) {
             if (level < mTargetSamples) {
-                fillSilence(out, 0, count);
+                for (int i = 0; i < count; i++) {
+                    out[i] = mIsConcealing ? nextConcealSample() : 0;
+                }
                 return 0;
             }
             mBuffering = false;
         }
 
-        if (level < count) { // underrun
+        if (level < count) { // underrun: what's left, then the voice goes on while the buffer refills
             copy(out, level);
-            fadeOut(out, level);
-            fillSilence(out, level, count);
+            startConcealing(mReadPos + level);
+            for (int i = level; i < count; i++) {
+                out[i] = nextConcealSample();
+            }
             mReadPos += level;
             mBuffering = true;
             mUnderrunCount++;
@@ -147,6 +182,14 @@ public final class JitterBuffer {
             copy(out, count);
         } else {
             resample(out, count, consume);
+        }
+
+        if (mIsConcealing) { // back from an underrun
+            for (int i = 0; i < CROSSFADE && i < count; i++) {
+                float weight = (i + 1f) / (CROSSFADE + 1);
+                out[i] = out[i] * weight + nextConcealSample() * (1 - weight);
+            }
+            mIsConcealing = false;
         }
 
         mReadPos += consume;
@@ -203,8 +246,10 @@ public final class JitterBuffer {
 
     private void resetInt() {
         mReadPos = mWritePos;
+        mHistoryStart = mWritePos;
         mBuffering = true;
         mHasSeq = false;
+        mIsConcealing = false;
     }
 
     private void updateLevel() {
@@ -218,6 +263,10 @@ public final class JitterBuffer {
         if (mWritePos - mReadPos > mRing.length) { // overflow, forget the oldest
             mReadPos = mWritePos - mRing.length;
         }
+    }
+
+    private void put(float value) {
+        put((short) Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, Math.round(value * 32768))));
     }
 
     private float sampleAt(long pos) {
@@ -246,19 +295,74 @@ public final class JitterBuffer {
         }
     }
 
-    /**
-     * Avoids a click when audio stops abruptly.
-     */
-    private static void fadeOut(float[] out, int count) {
-        int fade = Math.min(count, 48);
-        for (int i = 0; i < fade; i++) {
-            out[count - fade + i] *= 1f - (float) (i + 1) / fade;
-        }
+    private void startConcealing(long end) {
+        mIsConcealing = true;
+        mConcealEnd = end;
+        mConcealPeriod = findPeriod(end);
+        mConcealed = 0;
     }
 
-    private static void fillSilence(float[] out, int from, int to) {
-        for (int i = from; i < to; i++) {
-            out[i] = 0;
+    private float nextConcealSample() {
+        float value = concealSample(mConcealEnd, mConcealPeriod, mConcealed);
+        mConcealed = Math.min(mConcealed + 1, FULL_LEVEL + FADE);
+        return value;
+    }
+
+    /**
+     * Sample {@code index} after {@code end} of the made up continuation: the last period over and over, at full
+     * level for 10 ms, then fading out over 50 ms (like G.711 appendix I).
+     */
+    private float concealSample(long end, int period, int index) {
+        if (period <= 0 || index >= FULL_LEVEL + FADE) {
+            return 0;
         }
+
+        float gain = index < FULL_LEVEL ? 1 : 1 - (float) (index - FULL_LEVEL) / FADE;
+        return sampleAt(end - period + index % period) * gain;
+    }
+
+    /**
+     * Pitch period of the audio before {@code end}: where an earlier stretch best matches the last few ms.
+     * Repeating from there continues the waveform without a jump. 0 if there's too little audio.
+     */
+    private int findPeriod(long end) {
+        int maxPeriod = (int) Math.min(MAX_PERIOD, end - mHistoryStart - MATCH);
+
+        if (maxPeriod < MIN_PERIOD) {
+            return 0;
+        }
+
+        int length = MATCH + maxPeriod;
+        float[] history = mHistory;
+        for (int k = 0; k < length; k++) {
+            history[k] = sampleAt(end - length + k);
+        }
+
+        int recent = length - MATCH;
+        float recentEnergy = 0;
+        for (int j = 0; j < MATCH; j++) {
+            recentEnergy += history[recent + j] * history[recent + j];
+        }
+
+        int best = MIN_PERIOD;
+        float bestScore = -Float.MAX_VALUE;
+
+        for (int period = MIN_PERIOD; period <= maxPeriod; period++) {
+            int earlier = recent - period;
+            float dot = 0;
+            float energy = 0;
+            for (int j = 0; j < MATCH; j++) {
+                float value = history[earlier + j];
+                dot += history[recent + j] * value;
+                energy += value * value;
+            }
+            float score = energy > 0 && recentEnergy > 0 ? dot / (float) Math.sqrt(recentEnergy * energy) : 0;
+            if (score > bestScore) {
+                bestScore = score;
+                best = period;
+            }
+        }
+
+        return best;
     }
 }
