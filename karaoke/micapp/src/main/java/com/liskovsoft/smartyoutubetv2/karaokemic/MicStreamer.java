@@ -8,6 +8,7 @@ import android.os.Process;
 import android.os.SystemClock;
 import android.util.Log;
 
+import com.liskovsoft.smartyoutubetv2.karaoke.core.AutoTune;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokePairing;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokeProtocol;
 
@@ -23,7 +24,7 @@ import java.util.Random;
 /**
  * Captures the phone mic and streams it to SmartTube over UDP (see {@link KaraokeProtocol}).<br/>
  * Control thread: says HELLO every second, listens for the TV's WELCOME (status, round trip time).<br/>
- * Capture thread: reads 5 ms frames and sends each one as a datagram right away.
+ * Capture thread: reads 5 ms frames, auto-tunes them if asked, and sends each one as a datagram right away.
  */
 final class MicStreamer {
     private static final String TAG = MicStreamer.class.getSimpleName();
@@ -53,6 +54,10 @@ final class MicStreamer {
     private volatile float mLevel;
     private volatile float mGain = 1;
     private volatile boolean mIsMuted;
+    private volatile int mAutoTuneMode = AutoTune.MODE_OFF;
+    private volatile int mAutoTuneKey = AutoTune.KEY_CHROMATIC;
+    private volatile float mSungNote = -1;
+    private volatile int mTargetNote = -1;
     private volatile DatagramSocket mSocket;
     private volatile InetSocketAddress mTarget;
     private volatile String mPin;
@@ -141,6 +146,29 @@ final class MicStreamer {
 
     void setMuted(boolean muted) {
         mIsMuted = muted;
+    }
+
+    /**
+     * @param mode {@link AutoTune} mode, applied from the next frame
+     * @param key {@link AutoTune} key
+     */
+    void setAutoTune(int mode, int key) {
+        mAutoTuneMode = mode;
+        mAutoTuneKey = key;
+    }
+
+    /**
+     * What auto-tune hears, as a MIDI note (fractional), -1 when off or not singing.
+     */
+    float getSungNote() {
+        return mSungNote;
+    }
+
+    /**
+     * The note auto-tune pulls the voice to (MIDI), -1 when none.
+     */
+    int getTargetNote() {
+        return mTargetNote;
     }
 
     /**
@@ -297,6 +325,8 @@ final class MicStreamer {
         }
 
         short[] frame = new short[FRAME];
+        float[] voice = new float[FRAME];
+        AutoTune autoTune = new AutoTune(KaraokeProtocol.SAMPLE_RATE, FRAME);
         ByteBuffer packet = ByteBuffer.allocate(KaraokeProtocol.MAX_PACKET_SIZE);
         // Reused for every frame: no garbage in the audio loop
         DatagramPacket datagram = new DatagramPacket(packet.array(), packet.capacity(), mTarget);
@@ -314,12 +344,22 @@ final class MicStreamer {
                     break;
                 }
 
+                // On the raw mic, so the mic level doesn't change what counts as silence. Off: untouched.
+                autoTune.setMode(mAutoTuneMode);
+                autoTune.setKey(mAutoTuneKey);
+                for (int i = 0; i < read; i++) {
+                    voice[i] = frame[i] * (1f / 32768);
+                }
+                autoTune.process(voice, read);
+                mSungNote = autoTune.getNote();
+                mTargetNote = autoTune.getTargetNote();
+
                 boolean muted = mIsMuted;
-                float gain = muted ? 0 : mGain;
+                float gain = (muted ? 0 : mGain) * 32768;
                 int peak = 0;
 
                 for (int i = 0; i < read; i++) {
-                    int sample = Math.round(frame[i] * gain);
+                    int sample = Math.round(voice[i] * gain);
                     sample = Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, sample));
                     frame[i] = (short) sample;
                     peak = Math.max(peak, Math.abs(sample));
@@ -345,6 +385,8 @@ final class MicStreamer {
             }
             record.release();
             mLevel = 0;
+            mSungNote = -1;
+            mTargetNote = -1;
         }
     }
 

@@ -42,6 +42,41 @@
     <string name="notification_muted">Muted on %s</string>
     <string name="notification_no_answer">%s isn\'t answering. Is karaoke mode on?</string>
     <string name="notification_needs_pin">Open SmartTube Mic and enter the PIN shown on %s</string>
+    <string name="autotune_title">Auto-tune</string>
+    <string-array name="autotune_modes">
+        <item>Off</item>
+        <item>Natural</item>
+        <item>Strong</item>
+        <item>Robot</item>
+    </string-array>
+    <string-array name="autotune_hints">
+        <item>Your voice exactly as you sing it.</item>
+        <item>Gently pulls each note in tune and keeps your vibrato.</item>
+        <item>Firm correction that still glides between notes.</item>
+        <item>Snaps to every note instantly: the robotic sound.</item>
+    </string-array>
+    <string name="autotune_key">Key</string>
+    <string name="autotune_key_any">Any note</string>
+    <string name="autotune_key_major">%s major</string>
+    <string name="autotune_key_minor">%s minor</string>
+    <string-array name="note_names" translatable="false">
+        <item>C</item>
+        <item>C♯</item>
+        <item>D</item>
+        <item>E♭</item>
+        <item>E</item>
+        <item>F</item>
+        <item>F♯</item>
+        <item>G</item>
+        <item>A♭</item>
+        <item>A</item>
+        <item>B♭</item>
+        <item>B</item>
+    </string-array>
+    <!-- Sung note and how far off it is, e.g. "A3 −12¢" -->
+    <string name="autotune_note">You sing %1$s %2$+d¢</string>
+    <string name="autotune_note_in_tune">You sing %1$s, in tune</string>
+    <string name="autotune_note_waiting">Sing a note to see it here</string>
     <string name="mic_button_description">Start or stop the microphone</string>
     <string name="mic_button_start">Start singing on the TV</string>
     <string name="mic_button_stop">Stop singing</string>

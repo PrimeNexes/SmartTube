@@ -16,6 +16,8 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 
+import com.liskovsoft.smartyoutubetv2.karaoke.core.AutoTune;
+
 /**
  * Foreground service that owns the {@link MicStreamer}, so singing goes on with the screen off.
  * The notification shows what the mic is doing and has Mute and Stop buttons.
@@ -36,6 +38,8 @@ public class MicStreamService extends Service {
     private static volatile MicStreamer sStreamer;
     private static volatile float sGain = 1;
     private static volatile boolean sIsMuted;
+    private static volatile int sAutoTuneMode = AutoTune.MODE_OFF;
+    private static volatile int sAutoTuneKey = AutoTune.KEY_CHROMATIC;
     private static volatile int sLastFailure = -1;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private final Runnable mStatusCheck = new Runnable() {
@@ -109,6 +113,15 @@ public class MicStreamService extends Service {
         return sIsMuted;
     }
 
+    static void setAutoTune(int mode, int key) {
+        sAutoTuneMode = mode;
+        sAutoTuneKey = key;
+        MicStreamer streamer = sStreamer;
+        if (streamer != null) {
+            streamer.setAutoTune(mode, key);
+        }
+    }
+
     static void setPin(String pin) {
         MicStreamer streamer = sStreamer;
         if (streamer != null) {
@@ -151,6 +164,7 @@ public class MicStreamService extends Service {
                 new PrefsPinStore(getSharedPreferences(PINS_PREFS, MODE_PRIVATE)));
         streamer.setGain(sGain);
         streamer.setMuted(sIsMuted);
+        streamer.setAutoTune(sAutoTuneMode, sAutoTuneKey);
         streamer.start();
         sStreamer = streamer;
 

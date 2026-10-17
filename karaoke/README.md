@@ -2,13 +2,14 @@
 
 Sing along to any YouTube video on the TV. Phones become wireless microphones over Wi-Fi, the TV mixes
 the voices on top of the video sound, adds echo/reverb, can lower the original singer and change the key.
+Each phone can auto-tune its singer.
 
 ```
  Phone (SmartTube Mic app)                         TV (SmartTube)
  ┌──────────────────────────┐   UDP, 5 ms frames   ┌──────────────────────────────────────────────┐
  │ AudioRecord 48 kHz mono  │ ───────────────────▶ │ KaraokeServer ─▶ jitter buffer per mic        │
  │ (VOICE_PERFORMANCE)      │ ◀─────────────────── │   (NSD advertised)       │                    │
- │ gain / mute              │   WELCOME, RTT       │ TV mic (USB / remote) ───┤                    │
+ │ auto-tune, gain / mute   │   WELCOME, RTT       │ TV mic (USB / remote) ───┤                    │
  └──────────────────────────┘                      │                     KaraokeMixer              │
                                                    │   gate ─▶ auto level ─▶ sum ─▶ volume ─▶ fx  │
                                                    │   ─▶ limiter ─▶ low latency AudioTrack ──┐    │
@@ -26,7 +27,7 @@ the voices on top of the video sound, adds echo/reverb, can lower the original s
    (or type the address shown in the TV's Karaoke menu, e.g. `192.168.1.20:47900`).
 3. Tap the big mic button. The first time, the phone asks for the 6-digit **PIN** shown on the TV
    (in the "Karaoke on" message and in Karaoke menu → Connect a microphone). The phone remembers it.
-4. Sing. Up to 4 phones can sing at once (duets, groups).
+4. Sing. Up to 4 phones can sing at once (duets, groups). Optional: turn on **Auto-tune** on the phone.
 
 Karaoke mode stays on between videos, so phones don't reconnect for every song. It turns off from the
 menu, with a long press on the mic button, or when SmartTube exits.
@@ -59,11 +60,42 @@ connected, so singing goes on when you come back. Android may also pause SmartTu
 background or its voice search is open, so voice search and other apps can use it.
 The player button can be hidden in Settings → Player → Player buttons → Karaoke.
 
+## Auto-tune (phone)
+
+The SmartTube Mic app can pull the singer's voice to the nearest note before sending it to the TV. Each singer
+picks their own setting, and it can change while singing.
+
+| Setting | What it does |
+|---|---|
+| Off | The voice as it is (default) |
+| Natural | Corrects the average pitch of each note over ~80 ms: off notes come in tune, vibrato and slides stay |
+| Strong | Corrects within ~25 ms: firmer, still glides between notes |
+| Robot | Instant: every note is flat and jumps to the next one, the well-known robotic effect |
+| Key | Any note (nearest semitone, works for every song), or a major/minor key so only its notes are used |
+
+While singing, the card shows the note being sung and how far off it is ("You sing A3 −12¢").
+
+How it works (all in `karaoke/core`, on the phone's audio thread, no extra network traffic):
+- `PitchDetector`: YIN on a 4x decimated copy every 5 ms frame, refined at 48 kHz. 75 Hz–1 kHz, bass to soprano,
+  accurate to a fraction of a cent on steady tones. Silence, noise, consonants and breaths count as no pitch and
+  are left alone.
+- `AutoTune`: the nearest note of the key, with a little hysteresis so a voice sung between two notes doesn't flip
+  between them, and a smoothed correction (the retune speed above).
+- `PitchShifter`: a delay line read slightly faster or slower than it's written. When the delay drifts out of range,
+  the read position jumps by exactly one pitch period with a 5 ms crossfade, which is inaudible because the voice
+  repeats every period. Added delay is ~2–6 ms on average (up to ~12 ms for deep bass voices); overlap-add methods
+  (PSOLA) would need two periods, ~17–25 ms for male voices. Formants move with the pitch, by 3% for a half semitone
+  correction, which is hard to hear.
+
+Cost: ~27 µs per 5 ms frame on a laptop; on the emulator the app used ~2% more CPU with Robot on.
+Limits: one voice per phone; the key isn't detected from the song (pick it, or use Any note); very fast pitch
+changes (speech, runs) are corrected a few ms late, so Robot mode on speech is less exact than on held notes.
+
 ## Microphone options
 
 | Mic | Quality | Delay | Notes |
 |---|---|---|---|
-| **SmartTube Mic app** (Android phone) | 48 kHz, no voice-call processing | ~40–100 ms total | Recommended. Continuous, any number of songs, up to 4 phones |
+| **SmartTube Mic app** (Android phone) | 48 kHz, no voice-call processing | ~40–100 ms total | Recommended. Continuous, any number of songs, up to 4 phones, optional auto-tune |
 | **USB mic or USB wireless (UHF) mic receiver** plugged into the TV box | Best | Lowest | Turn on Mic options → "Use the TV's own mic". Works on boxes with USB audio input (e.g. Nvidia Shield, most Android TV boxes) |
 | **Google TV app / remote mic** | Speech quality | High | Also via "Use the TV's own mic". Most TVs only stream it while the mic button is held and send it to Google Assistant first, so it suits short tests rather than whole songs. Behaviour depends on the TV |
 | **Bluetooth karaoke mic with built-in speaker** | Good | n/a | Needs no app support: the mic mixes your voice into its own speaker. Pair it as the TV's audio output (video sound may lag slightly) |
@@ -107,12 +139,12 @@ Use JDK 17. On an Apple Silicon Mac without Rosetta, the existing `exoplayer-lib
 
 | Path | What |
 |---|---|
-| `karaoke/core` | Pure Java, shared by both apps, JVM unit tested: `KaraokeProtocol`, `KaraokePairing`, `PinChecker`, `PairingGuard`, `JitterBuffer`, `VocalRemover`, `AutoLevel`, `VoiceReverb`, `NoiseGate`, `Limiter`, `Biquad`, `KaraokeSearch` |
+| `karaoke/core` | Pure Java, shared by both apps, JVM unit tested: `KaraokeProtocol`, `KaraokePairing`, `PinChecker`, `PairingGuard`, `JitterBuffer`, `VocalRemover`, `AutoLevel`, `VoiceReverb`, `NoiseGate`, `Limiter`, `Biquad`, `KaraokeSearch`, `PitchDetector`, `PitchShifter`, `AutoTune` |
 | `common/.../common/karaoke` | TV side: `KaraokeManager` (public API), `KaraokeServer` (UDP + NSD), `KaraokeMixer` (AudioTrack), `LocalMicCapture`, `MicSource`, `VocalRemoverAudioProcessor` (ExoPlayer) |
 | `common/.../controllers/KaraokeController.java` | Player button and Karaoke menu |
 | `common/.../prefs/KaraokeData.java` | Saved karaoke settings |
 | `smarttubetv/.../actions/KaraokeAction.java` | Player button |
-| `karaoke/micapp` | SmartTube Mic phone app: `MainActivity`, `MicStreamService` (foreground, works with the screen off), `MicStreamer`, `TvFinder` (NSD) |
+| `karaoke/micapp` | SmartTube Mic phone app: `MainActivity`, `MicStreamService` (foreground, works with the screen off), `MicStreamer` (capture, auto-tune, send), `TvFinder` (NSD) |
 
 Small hooks into existing code: `PlaybackPresenter` registers the controller, `CustomOverridesRenderersFactory`
 adds the vocal remover to ExoPlayer's audio processors, `PlayerTweaksData`/`PlayerSettingsPresenter`/`VideoPlayerGlue`
@@ -168,11 +200,19 @@ buffer corrects clock drift between phone and TV by ±1 sample per frame.
 
 ## Testing done
 
-- `:karaokecore:test`: 56 unit tests (protocol round trips and truncated packets, jitter buffer
+- `:karaokecore:test`: 77 unit tests (protocol round trips and truncated packets, jitter buffer
   loss/late/restart/drift/burst and cross-thread target changes, vocal remover removes centred 300 Hz/1 kHz/3 kHz,
   keeps bass, cymbals and stereo content, has no dip at the crossovers, bypasses bit-exact and cleans the centre
   channel of 5.1, auto level, reverb tails decay without NaN, limiter ceiling, noise gate, karaoke search queries,
-  PIN proof/challenge, wrong-PIN rate limiting, old-PIN rule after New PIN, whole pairing handshake).
+  PIN proof/challenge, wrong-PIN rate limiting, old-PIN rule after New PIN, whole pairing handshake, and for
+  auto-tune: pitch of tones from 82 Hz to 988 Hz within 3 cents, no octave error on voice-like tones or a weak
+  fundamental, glides followed, noise and silence have no pitch, the shifter is a pure delay at ratio 1, shifts by
+  exact semitones, doesn't click at splices even with a wrong period and keeps its delay in range, Robot snaps to the
+  nearest note, keys pick the right note, Natural keeps vibrato and Robot flattens it, no flapping between two notes,
+  noise passes unchanged, switching on and off mid-song doesn't click, Off is bit exact).
+- Auto-tune on generated audio (macOS `say`, a singing voice detuned by up to 45 cents): voiced frames within
+  10 cents of a note went from 25% to 67% (Natural), 81% (Strong) and 91% (Robot, 97% on held notes, mean 3 cents
+  off). On the emulator: the Auto-tune card, mode and key menus (saved), streaming to the TV with Robot on.
 - On an Android 16 emulator (phone image) with both apps installed: player button and Karaoke menu, NSD discovery,
   phone → TV streaming (Connected mics: buffer 40 ms, loss 0.0%), mixer AudioTrack playing alongside the video,
   vocal remover 100% + key +2 with playback continuing, karaoke off/on with automatic reconnect, phone Stop

@@ -18,18 +18,23 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.View;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.liskovsoft.smartyoutubetv2.karaoke.core.AutoTune;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokePairing;
 import com.liskovsoft.smartyoutubetv2.karaoke.core.KaraokeProtocol;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 public class MainActivity extends Activity implements TvFinder.Listener {
@@ -40,6 +45,10 @@ public class MainActivity extends Activity implements TvFinder.Listener {
     private static final String PREF_TV_NAME = "tv_name";
     private static final String PREF_SINGER = "singer";
     private static final String PREF_GAIN = "gain";
+    private static final String PREF_AUTOTUNE_MODE = "autotune_mode";
+    private static final String PREF_AUTOTUNE_KEY = "autotune_key";
+    /** Keeps the last sung note on screen between words. */
+    private static final long NOTE_HOLD_MS = 600;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private final List<TvFinder.Tv> mTvs = new ArrayList<>();
     private final Runnable mRefresh = new Runnable() {
@@ -58,6 +67,13 @@ public class MainActivity extends Activity implements TvFinder.Listener {
     private TextView mGainLabel;
     private SeekBar mGain;
     private EditText mSinger;
+    private Spinner mAutoTuneMode;
+    private Spinner mAutoTuneKey;
+    private TextView mAutoTuneHint;
+    private View mAutoTuneKeyRow;
+    private TextView mAutoTuneNote;
+    private String[] mNoteNames;
+    private long mLastNoteMs;
     private TextView mTvsHint;
     private LinearLayout mTvsContainer;
     private EditText mAddress;
@@ -147,6 +163,8 @@ public class MainActivity extends Activity implements TvFinder.Listener {
             }
             refreshState();
         });
+
+        setUpAutoTune();
     }
 
     @Override
@@ -245,6 +263,7 @@ public class MainActivity extends Activity implements TvFinder.Listener {
         mMicButton.setContentDescription(getString(isLive ? R.string.mic_button_stop : R.string.mic_button_start));
         mMute.setText(MicStreamService.isMuted() ? R.string.unmute : R.string.mute);
         mLevel.setLevel(isLive ? streamer.getLevel() : 0);
+        refreshNote(streamer);
 
         int status = isLive ? streamer.getStatus() : -1;
         if (status == MicStreamer.STATUS_NEEDS_PIN || status == MicStreamer.STATUS_WRONG_PIN) {
@@ -414,6 +433,100 @@ public class MainActivity extends Activity implements TvFinder.Listener {
         mSelectedTvAddress = tv.getAddress();
         mAddress.setText(mSelectedTvAddress);
         mSelectedTvName = tv.name; // after setText(), the watcher clears it otherwise
+    }
+
+    private void setUpAutoTune() {
+        mAutoTuneMode = findViewById(R.id.autotune_mode);
+        mAutoTuneKey = findViewById(R.id.autotune_key);
+        mAutoTuneHint = findViewById(R.id.autotune_hint);
+        mAutoTuneKeyRow = findViewById(R.id.autotune_key_row);
+        mAutoTuneNote = findViewById(R.id.autotune_note);
+        mNoteNames = getResources().getStringArray(R.array.note_names);
+
+        String[] modes = getResources().getStringArray(R.array.autotune_modes);
+        mAutoTuneMode.setAdapter(spinnerAdapter(Arrays.asList(modes)));
+
+        // Spinner position = AutoTune key + 1: any note, C..B major, C..B minor
+        List<String> keys = new ArrayList<>();
+        keys.add(getString(R.string.autotune_key_any));
+        for (String note : mNoteNames) {
+            keys.add(getString(R.string.autotune_key_major, note));
+        }
+        for (String note : mNoteNames) {
+            keys.add(getString(R.string.autotune_key_minor, note));
+        }
+        mAutoTuneKey.setAdapter(spinnerAdapter(keys));
+
+        int mode = mPrefs.getInt(PREF_AUTOTUNE_MODE, AutoTune.MODE_OFF);
+        int key = mPrefs.getInt(PREF_AUTOTUNE_KEY, AutoTune.KEY_CHROMATIC);
+        mAutoTuneMode.setSelection(mode >= 0 && mode < modes.length ? mode : AutoTune.MODE_OFF);
+        mAutoTuneKey.setSelection(key + 1 >= 0 && key + 1 < keys.size() ? key + 1 : 0);
+        applyAutoTune();
+
+        AdapterView.OnItemSelectedListener listener = new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                applyAutoTune();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        };
+        mAutoTuneMode.setOnItemSelectedListener(listener);
+        mAutoTuneKey.setOnItemSelectedListener(listener);
+    }
+
+    /**
+     * Works while singing too: the next 5 ms frame uses it.
+     */
+    private void applyAutoTune() {
+        int mode = mAutoTuneMode.getSelectedItemPosition();
+        int key = mAutoTuneKey.getSelectedItemPosition() - 1;
+
+        mPrefs.edit().putInt(PREF_AUTOTUNE_MODE, mode).putInt(PREF_AUTOTUNE_KEY, key).apply();
+        MicStreamService.setAutoTune(mode, key);
+
+        mAutoTuneHint.setText(getResources().getStringArray(R.array.autotune_hints)[mode]);
+        mAutoTuneKeyRow.setVisibility(mode != AutoTune.MODE_OFF ? View.VISIBLE : View.GONE);
+    }
+
+    /**
+     * Tuner-style readout: the note auto-tune pulls to and how far off the voice is.
+     */
+    private void refreshNote(MicStreamer streamer) {
+        if (streamer == null || mAutoTuneMode.getSelectedItemPosition() == AutoTune.MODE_OFF) {
+            mAutoTuneNote.setVisibility(View.GONE);
+            return;
+        }
+
+        mAutoTuneNote.setVisibility(View.VISIBLE);
+
+        int target = streamer.getTargetNote();
+        float sung = streamer.getSungNote();
+        long nowMs = System.currentTimeMillis();
+        String text;
+
+        if (target >= 0 && sung >= 0) {
+            mLastNoteMs = nowMs;
+            int cents = Math.round((sung - target) * 100);
+            String name = mNoteNames[target % 12] + (target / 12 - 1);
+            text = Math.abs(cents) <= 5 ? getString(R.string.autotune_note_in_tune, name) : getString(R.string.autotune_note, name, cents);
+        } else if (nowMs - mLastNoteMs > NOTE_HOLD_MS) {
+            text = getString(R.string.autotune_note_waiting);
+        } else {
+            return; // between words
+        }
+
+        if (!text.contentEquals(mAutoTuneNote.getText())) {
+            mAutoTuneNote.setText(text);
+        }
+    }
+
+    private ArrayAdapter<String> spinnerAdapter(List<String> items) {
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, items);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        return adapter;
     }
 
     private void applyGain(int percent) {
